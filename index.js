@@ -1,7 +1,12 @@
+import { createRequire } from 'node:module'
 import { HeadbotManager } from './lib/manager.js'
 import { startIngress } from './lib/ingress.js'
 import { renderManagerPage } from './lib/page.js'
 import { AuditedCommunications } from './lib/communications.js'
+import { HeadbotReleaseUpdater } from './lib/release-updater.js'
+
+const require = createRequire(import.meta.url)
+export const version = require('./package.json').version
 
 export const name = 'ds-headbot'
 export const inject = ['connection', 'webServer']
@@ -18,7 +23,17 @@ export function apply(ctx, config = {}) {
     parentHost: ctx.webServer.host,
     logger: ctx.logger,
   })
-  const runtimeConfig = { ...config, publicHost: manager.publicHost }
+  const releaseUpdater = new HeadbotReleaseUpdater({
+    currentVersion: version,
+    manager,
+    logger: ctx.logger,
+    restartCommand: config.restartCommand,
+    restartArgs: config.restartArgs,
+    launchdLabel: config.launchdLabel,
+    pnpmCommand: config.pnpmCommand,
+    dshCommand: manager.dshCommand,
+  })
+  const runtimeConfig = { ...config, publicHost: manager.publicHost, version }
   const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
 
   ctx.effect(() => {
@@ -53,7 +68,7 @@ export function apply(ctx, config = {}) {
           try {
             const actor = await manager.authenticateTeam(req.headers.authorization)
             if (!actor) return json(res, 401, { error: 'invalid or revoked team credential' })
-            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor)
+            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor, releaseUpdater)
           } catch (error) {
             return json(res, error.statusCode ?? 503, { error: error.message })
           }
@@ -64,7 +79,7 @@ export function apply(ctx, config = {}) {
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
           return
         }
-        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger)
+        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater)
       },
     })
 
@@ -94,7 +109,7 @@ export function apply(ctx, config = {}) {
   }, 'ds-headbot: manager and team processes')
 }
 
-export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor) {
+export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor, releaseUpdater) {
   const url = new URL(req.url ?? '/', 'http://headbot.local')
   const route = url.pathname.slice(API_PATH.length) || '/'
   const method = req.method ?? 'GET'
@@ -102,6 +117,14 @@ export async function handleApiRequest(req, res, manager, communications, runtim
   res.setHeader('X-Content-Type-Options', 'nosniff')
 
   try {
+    if (method === 'GET' && route === '/release') {
+      if (!releaseUpdater) return json(res, 503, { error: 'release updater unavailable' })
+      return json(res, 200, await releaseUpdater.check({ force: url.searchParams.get('refresh') === '1' }))
+    }
+    if (method === 'POST' && route === '/release/upgrade') {
+      if (!releaseUpdater) return json(res, 503, { error: 'release updater unavailable' })
+      return json(res, 202, await releaseUpdater.startUpgrade())
+    }
     if (actor) {
       if (method === 'GET' && route === '/comms/v1/teams') return json(res, 200, await communications.directory(actor))
       if (method === 'POST' && route === '/comms/v1/messages') return json(res, 201, await communications.send(actor, await readJson(req, communications.bodyLimit)))

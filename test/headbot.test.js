@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { HeadbotManager } from '../lib/manager.js'
 import { AuditedCommunications } from '../lib/communications.js'
-import { apply as applyHeadbot } from '../index.js'
+import { apply as applyHeadbot, handleApiRequest, version as headbotVersion } from '../index.js'
 import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
+import { HeadbotReleaseUpdater, compareVersions, performHeadbotUpdate } from '../lib/release-updater.js'
 import { parse } from 'yaml'
 import { startIngress } from '../lib/ingress.js'
 import { runInNewContext } from 'node:vm'
@@ -280,11 +282,17 @@ test('HTTP admission separates browser management from team access and plugin to
   assert.equal((await fetch(base + '/comms/v1/inbox', { headers: { Authorization: 'Bearer ' + b.communicationToken } })).status, 401)
 })
 
-test('manager page exposes deletion and audit controls with valid script syntax', () => {
-  const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh' })
+test('manager page shows the version updater and places teams before team creation', () => {
+  const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh', version: '0.2.5' })
   assert.match(html, /创建团队/)
   assert.doesNotMatch(html, /添加团队副本/)
   assert.match(html, /全部更新 DS Bot/)
+  assert.match(html, /当前版本：v0\.2\.5/)
+  assert.match(html, /id="latest-version"/)
+  assert.match(html, /id="upgrade-headbot"/)
+  assert.match(html, /button\.update-ready/)
+  assert.ok(html.indexOf('<h2>团队实例</h2>') < html.indexOf('<h2>创建团队</h2>'))
+  assert.match(html, /call\('\/release\/upgrade'/)
   assert.match(html, /团队名称/)
   assert.match(html, /独立服务端口/)
   assert.match(html, /edit\.textContent='编辑'/)
@@ -298,10 +306,129 @@ test('manager page exposes deletion and audit controls with valid script syntax'
   new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
 })
 
+test('release updater detects newer stable versions and launches a detached update worker', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  assert.equal(headbotVersion, '0.2.5')
+  assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
+  assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
+  assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
+
+  let requestedUrl, spawned
+  const manager = { root: path.join(root, 'headbot'), parentHome: path.join(root, 'dsh'), dshCommand: 'dsh', parentPort: 3080, controllerPath: 'dsh' }
+  const updater = new HeadbotReleaseUpdater({
+    currentVersion: '0.2.5', manager, restartCommand: '/bin/launchctl', restartArgs: ['kickstart', '-k', 'gui/501/com.deepseek.dsh'],
+    fetchImpl: async url => {
+      requestedUrl = url
+      return { ok: true, status: 200, async json() { return { tag_name: 'v0.2.6', draft: false, prerelease: false } } }
+    },
+    spawnImpl(command, args, options) {
+      spawned = { command, args, options }
+      return { once() {}, unref() {} }
+    },
+  })
+  const status = await updater.check({ force: true })
+  assert.match(requestedUrl, /api\.github\.com\/repos\/idaydayup2023\/ds-headbot\/releases\/latest$/)
+  assert.equal(status.currentVersion, '0.2.5')
+  assert.equal(status.latestVersion, '0.2.6')
+  assert.equal(status.updateAvailable, true)
+  assert.equal(status.releaseUrl, 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.6')
+
+  const started = await updater.startUpgrade()
+  assert.equal(started.state, 'downloading')
+  assert.equal(spawned.command, process.execPath)
+  const workerConfig = JSON.parse(spawned.args[1])
+  assert.equal(workerConfig.tag, 'v0.2.6')
+  assert.equal(workerConfig.targetVersion, '0.2.6')
+  assert.equal(workerConfig.parentHome, manager.parentHome)
+  assert.equal(spawned.options.detached, true)
+  assert.equal((await updater.readState()).state, 'downloading')
+})
+
+test('release API checks versions and queues the authenticated upgrade action', async () => {
+  const calls = []
+  const updater = {
+    async check(options) { calls.push(['check', options]); return { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true } },
+    async startUpgrade() { calls.push(['upgrade']); return { state: 'downloading', targetVersion: '0.2.6' } },
+  }
+  const capture = () => ({
+    statusCode: 0, headers: {}, body: '',
+    setHeader(name, value) { this.headers[name] = value },
+    writeHead(statusCode, headers = {}) { this.statusCode = statusCode; Object.assign(this.headers, headers) },
+    end(body = '') { this.body += body ?? '' },
+  })
+  const getResponse = capture()
+  await handleApiRequest({ method: 'GET', url: `${apiPath}/release?refresh=1` }, getResponse, {}, {}, {}, quiet, undefined, updater)
+  assert.equal(getResponse.statusCode, 200)
+  assert.deepEqual(JSON.parse(getResponse.body), { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true })
+  assert.deepEqual(calls[0], ['check', { force: true }])
+
+  const postResponse = capture()
+  await handleApiRequest({ method: 'POST', url: `${apiPath}/release/upgrade` }, postResponse, {}, {}, {}, quiet, undefined, updater)
+  assert.equal(postResponse.statusCode, 202)
+  assert.deepEqual(JSON.parse(postResponse.body), { state: 'downloading', targetVersion: '0.2.6' })
+  assert.deepEqual(calls[1], ['upgrade'])
+})
+
+test('release worker verifies the tagged package, installs it, and retains a rollback package', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-worker-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const parentHome = path.join(root, 'dsh')
+  const managerRoot = path.join(parentHome, 'headbot')
+  const profileDir = path.join(parentHome, 'profiles/web')
+  const installedPackage = path.join(profileDir, 'node_modules/ds-headbot')
+  const sourceRoot = path.join(root, 'archive-root')
+  await mkdir(installedPackage, { recursive: true })
+  await mkdir(sourceRoot, { recursive: true })
+  await writeFile(path.join(installedPackage, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.5' }))
+  await writeFile(path.join(installedPackage, 'index.js'), 'export {}\n')
+  await writeFile(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.6', scripts: { test: 'node --test' } }))
+  await writeFile(path.join(sourceRoot, 'index.js'), 'export {}\n')
+  const sourceTar = path.join(root, 'source.tar.gz')
+  execFileSync('/usr/bin/tar', ['-czf', sourceTar, '-C', root, 'archive-root'])
+  const sourceBytes = await readFile(sourceTar)
+  const dshCalls = []
+  const runCommand = async (command, args, options = {}) => {
+    if (command === '/usr/bin/tar') {
+      return { stdout: execFileSync(command, args, { cwd: options.cwd }).toString(), stderr: '' }
+    }
+    if (args[0] === '--check') return { stdout: '', stderr: '' }
+    if (args[0] === 'pack') {
+      const manifest = JSON.parse(await readFile(path.join(options.cwd, 'package.json'), 'utf8'))
+      const destination = args[args.indexOf('--pack-destination') + 1]
+      await mkdir(destination, { recursive: true })
+      await writeFile(path.join(destination, `ds-headbot-${manifest.version}.tgz`), `packed:${manifest.version}`)
+      return { stdout: '', stderr: '' }
+    }
+    if (args.includes('add')) {
+      dshCalls.push(args)
+      const packagePath = args.at(-1)
+      const nextVersion = packagePath.endsWith('ds-headbot-0.2.6.tgz') ? '0.2.6' : '0.2.5'
+      await writeFile(path.join(installedPackage, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: nextVersion }))
+      return { stdout: '', stderr: '' }
+    }
+    if (command === '/usr/bin/true') return { stdout: '', stderr: '' }
+    throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
+  }
+  const result = await performHeadbotUpdate({
+    targetVersion: '0.2.6', tag: 'v0.2.6', parentHome, managerRoot, profile: 'web', dshCommand: 'dsh', pnpmCommand: 'pnpm',
+    restart: { command: '/usr/bin/true', args: [] }, controllerPath: 'dsh', parentPort: 3080,
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, async arrayBuffer() { return sourceBytes } }),
+    runCommand,
+    healthCheck: async () => true,
+  })
+  assert.equal(result.state, 'completed')
+  assert.equal(await readFile(path.join(installedPackage, 'package.json'), 'utf8').then(value => JSON.parse(value).version), '0.2.6')
+  assert.ok(await readFile(result.rollbackPackage))
+  assert.equal(dshCalls.length, 1)
+  assert.equal((await readFile(path.join(managerRoot, 'headbot-update-state.json'), 'utf8').then(JSON.parse)).state, 'completed')
+})
+
 test('browser creation retains its form after event.currentTarget is cleared', async () => {
   const elements = new Map(), handlers = new Map()
   let resets = 0, submitted
-  const element = () => ({style:{}, textContent:'', value:'', addEventListener(){}, append(){}, replaceChildren(){}, querySelector(){return null}})
+  const element = () => ({style:{}, textContent:'', value:'', href:'', hidden:false, disabled:false, classList:{remove(){},toggle(){}}, addEventListener(){}, append(){}, replaceChildren(){}, querySelector(){return null}})
   const form = {...element(), elements:{port:{value:'31091'}}, reset(){resets++}, addEventListener(type, handler){handlers.set(type,handler)}}
   elements.set('#add-form', form)
   const document = {querySelector(id){if(!elements.has(id))elements.set(id,element());return elements.get(id)},createElement:element}
@@ -315,8 +442,56 @@ test('browser creation retains its form after event.currentTarget is cleared', a
   const pending = handlers.get('submit')(event)
   event.currentTarget = null
   await pending
+  await new Promise(resolve => setImmediate(resolve))
   assert.equal(resets,1)
   assert.equal(form.elements.port.value,'3101')
   assert.equal(submitted.id,'browser-test')
   assert.equal(elements.get('#error').textContent,'')
+})
+
+test('browser highlights a newer Headbot release and starts the upgrade on click', async () => {
+  const elements = new Map(), handlers = new Map()
+  let upgradeRequests = 0
+  let updateState = 'idle'
+  function element(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', disabled: false, hidden: false, href: '', children: [],
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const document = {
+    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+    createElement(tag) { return element(tag) },
+  }
+  const source = renderManagerPage({ version: '0.2.5' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, setInterval() {}, confirm() { return true },
+    FormData: class { constructor() {} get() { return '' } },
+    async fetch(url, options = {}) {
+      if (url.endsWith('/release/upgrade')) {
+        upgradeRequests++
+        updateState = 'downloading'
+        return { status: 202, ok: true, async json() { return { state: updateState } } }
+      }
+      const data = url.includes('/release')
+        ? { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true, releaseUrl: 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.6', state: updateState, message: '' }
+        : url.includes('/audit') ? { events: [], nextBefore: null } : { teams: [] }
+      return { status: 200, ok: true, async json() { return data } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  const upgradeButton = elements.get('#upgrade-headbot')
+  assert.equal(upgradeButton.disabled, false)
+  assert.equal(upgradeButton.textContent, '升级到 v0.2.6')
+  assert.equal(upgradeButton.classList.contains('update-ready'), true)
+
+  await handlers.get('#upgrade-headbot:click')({ currentTarget: upgradeButton })
+  assert.equal(upgradeRequests, 1)
+  assert.equal(upgradeButton.disabled, true)
+  assert.equal(upgradeButton.textContent, '正在升级…')
 })

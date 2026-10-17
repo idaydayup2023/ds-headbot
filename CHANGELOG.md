@@ -2,6 +2,18 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.5] - 2026-10-17
+
+### Added
+
+- Show the installed DS Headbot version and check the latest stable GitHub release from the management page.
+- Highlight a one-click Headbot upgrade when a newer release is available; install it into the DSH Web profile and restart the controller on macOS LaunchAgent deployments.
+
+### Changed
+
+- Move the team instance card above the team creation card.
+- Keep downloaded source, packed upgrade artifacts, and a rollback package under the DSH user's Headbot data directory, outside project checkouts.
+
 ## [0.2.4] - 2026-10-17
 
 ### Added

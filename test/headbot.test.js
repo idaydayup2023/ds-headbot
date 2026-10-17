@@ -1,8 +1,9 @@
+
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -309,12 +310,12 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.2.6')
+  assert.equal(headbotVersion, '0.2.7')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
 
-  let requestedUrl, spawned
+  let requestedUrl, spawned, workerExit
   const manager = { root: path.join(root, 'headbot'), parentHome: path.join(root, 'dsh'), dshCommand: 'dsh', parentPort: 3080, controllerPath: 'dsh' }
   const updater = new HeadbotReleaseUpdater({
     currentVersion: '0.2.5', manager, restartCommand: '/bin/launchctl', restartArgs: ['kickstart', '-k', 'gui/501/com.deepseek.dsh'],
@@ -324,7 +325,7 @@ test('release updater detects newer stable versions and launches a detached upda
     },
     spawnImpl(command, args, options) {
       spawned = { command, args, options }
-      return { once() {}, unref() {} }
+      return { once(event, listener) { if (event === 'exit') workerExit = listener; return this }, unref() {} }
     },
   })
   const status = await updater.check({ force: true })
@@ -337,12 +338,12 @@ test('release updater detects newer stable versions and launches a detached upda
   const started = await updater.startUpgrade()
   assert.equal(started.state, 'downloading')
   assert.equal(spawned.command, process.execPath)
-  const workerConfig = JSON.parse(spawned.args[1])
+  assert.equal(path.basename(spawned.args[0]), 'release-updater.js'); await access(spawned.args[0]); const workerConfig = JSON.parse(spawned.args[1])
   assert.equal(workerConfig.tag, 'v0.2.6')
   assert.equal(workerConfig.targetVersion, '0.2.6')
   assert.equal(workerConfig.parentHome, manager.parentHome)
   assert.equal(spawned.options.detached, true)
-  assert.equal((await updater.readState()).state, 'downloading')
+  assert.equal((await updater.readState()).state, 'downloading'); await workerExit(1, null); assert.equal((await updater.readState()).state, 'failed')
 })
 
 test('release API checks versions and queues the authenticated upgrade action', async () => {

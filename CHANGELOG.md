@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.7] - 2026-10-17
+
+### Fixed
+
+- Launch the detached updater from its packaged `release-updater.js` entrypoint; the previously referenced `release-worker.js` file was not included in the package.
+- Mark an updater attempt as failed if its detached process exits unsuccessfully, instead of leaving the manager stuck in a downloading state.
+
 ## [0.2.6] - 2026-10-17
 
 ### Fixed

@@ -2,6 +2,14 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.1] - 2026-10-17
+
+### Fixed
+
+- Preserve the semicolon after the scoped Cookie Path attribute, so browsers accept controller/team sign-in cookies with the correct path.
+- Retry temporary non-ready HTTP responses while DSH is mounting routes, instead of leaving a healthy restarted instance in `starting`.
+- Added regression checks for both production findings and stricter cookie parsing in the live verification script.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added

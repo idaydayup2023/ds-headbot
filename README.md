@@ -1,5 +1,7 @@
 # DS Headbot
 
+Current release: **0.2.1**. This patch fixes browser login cookie scoping and startup readiness discovered during Agent-Mac production acceptance.
+
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
 Each team receives its own DSH home, `web` profile state, ds-bot configuration, workspace, process, and loopback service port. DS Headbot provides one management page to create, start, stop, restart, delete, or update each instance while the controller stays running. The DSH executable is shared, while team data and runtime state remain separate and outside project checkouts. Its bundled communication plugin lets bot teams exchange messages and files through a central audit module.

@@ -18,6 +18,16 @@ const ids = [`verify-a-${suffix}`, `verify-b-${suffix}`]
 const created = []
 const results = { startedAt: new Date().toISOString(), teams: ids, checks: [], modelRequests: 0 }
 let cookie
+function scopedCookies(response, mount) {
+  const cookies = response.headers['set-cookie']
+  assert.ok(cookies?.length, 'sign-in did not return a cookie')
+  for (const cookie of cookies) {
+    const attributes = cookie.split(';').map(item => item.trim())
+    assert.ok(attributes.includes(`Path=${mount}/`), 'cookie path is not properly delimited')
+    for (const required of ['Secure', 'HttpOnly', 'SameSite=Strict']) assert.ok(attributes.includes(required))
+  }
+  return cookies.map(item => item.split(';')[0]).join('; ')
+}
 function request(route, { method = 'GET', body, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body)
@@ -68,8 +78,7 @@ try {
   const launch = new URL(printed)
   const login = await request(launch.pathname + launch.search)
   assert.ok([302, 303].includes(login.status), `login HTTP ${login.status}`)
-  cookie = login.headers['set-cookie'].map(item => item.split(';')[0]).join('; ')
-  assert.ok(login.headers['set-cookie'].every(item => item.includes('Path=/dsh/') && item.includes('Secure')))
+  cookie = scopedCookies(login, '/dsh')
   results.checks.push('unauthenticated admission and controller login with scoped cookie')
   assert.equal((await request(prefix + '/teams', { headers: { Origin: 'https://untrusted.invalid' } })).status, 403)
   assert.equal((await request('/dsh/manage/')).status, 200)
@@ -84,8 +93,7 @@ try {
     const url = new URL(team.launchUrl)
     const login = await request(url.pathname + url.search, { headers: { Cookie: '' } })
     assert.ok([302, 303].includes(login.status), `login HTTP ${login.status}`)
-    assert.ok(login.headers['set-cookie'].every(item => item.includes(`Path=/teams/${team.id}/`) && item.includes('Secure')))
-    const teamCookie = login.headers['set-cookie'].map(item => item.split(';')[0]).join('; ')
+    const teamCookie = scopedCookies(login, `/teams/${team.id}`)
     const page = await request(`/teams/${team.id}/`, { headers: { Cookie: teamCookie } })
     assert.equal(page.status, 200)
     assert.ok(page.bytes.toString().includes('<base href="./">'), 'DSH must resolve assets relative to the team mount')

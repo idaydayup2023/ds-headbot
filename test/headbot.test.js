@@ -11,6 +11,7 @@ import { apply as applyHeadbot } from '../index.js'
 import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
 import { parse } from 'yaml'
+import { startIngress } from '../lib/ingress.js'
 
 const quiet = { warn() {}, error() {} }
 const apiPath = '/api/ds-headbot/v1'
@@ -27,12 +28,13 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const fake = path.join(root, 'fake-dsh.mjs')
-  await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync} from 'node:fs';
+  await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync,existsSync} from 'node:fs';
 const args=process.argv.slice(2);if(args[0]==='plugin')process.exit(0);
 const value=key=>args[args.indexOf(key)+1];
 if(!readFileSync(value('--patch'),'utf8').includes('team-plugin.js'))process.exit(2);
 if(!process.env.HEADBOT_TEAM_TOKEN||process.cwd()!==realpathSync(process.env.HEADBOT_TEAM_FILES_ROOT))process.exit(3);
-http.createServer((_req,res)=>res.end('ok')).listen(Number(value('--port')),'127.0.0.1');
+const readyAt=Date.now()+(existsSync(${JSON.stringify(path.join(root, 'transient-404'))})?800:0);
+http.createServer((_req,res)=>{res.statusCode=Date.now()<readyAt?404:200;res.end('ok')}).listen(Number(value('--port')),'127.0.0.1');
 console.log('dsh web: '+value('--public-url')+'?token=test-secret');`)
   const manager = new HeadbotManager({ dataDir: path.join(root, 'headbot'), dshHome: path.join(root, 'home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port() }, { parentPort: await port(), logger: quiet })
   t.after(() => manager.close())
@@ -98,6 +100,34 @@ test('offline messages, binary attachments, safe retries and replay survive cont
   await assert.rejects(reloaded.inbox(b), { statusCode: 401 })
   assert.deepEqual((await reloaded.inbox(manager.identity(manager.findTeam('beta')))).messages, [])
   assert.equal((await reloaded.audit({ team: 'beta' })).events.length, 3)
+})
+
+test('startup retries temporary HTTP 404 responses until DSH routes are ready', async t => {
+  const {manager, root} = await fixture(t)
+  await writeFile(path.join(root, 'transient-404'), '')
+  await add(manager, 'warming')
+  await manager.startTeam('warming')
+  assert.equal((await manager.getTeam('warming')).status, 'running')
+})
+
+test('ingress scopes browser cookies while preserving attribute separators', async t => {
+  const upstream = createServer((_req, res) => {
+    res.writeHead(303, {Location:'./', 'Set-Cookie':'dsh-auth-example=signed; Max-Age=2592000; Path=/; Expires=Mon, 16 Nov 2026 03:18:29 GMT; HttpOnly; SameSite=Strict'})
+    res.end()
+  })
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => {upstream.close(resolve); upstream.closeAllConnections()}))
+  const ingressPort = await port()
+  const ingress = startIngress({host:'127.0.0.1',port:ingressPort,parentHost:'127.0.0.1',parentPort:upstream.address().port,controllerPath:'dsh',teamsPath:'teams',publicHost:'localhost',manager:{async getTeam(){return {port:upstream.address().port,status:'running'}}}})
+  await ingress.ready; t.after(() => ingress.close())
+  for (const mount of ['/dsh', '/teams/example']) {
+    const response=await fetch(`http://127.0.0.1:${ingressPort}${mount}/?token=example`, {redirect:'manual'})
+    assert.equal(response.status,303)
+    const attributes=response.headers.getSetCookie()[0].split(';').map(item=>item.trim())
+    assert.ok(attributes.includes(`Path=${mount}/`), attributes.join(';'))
+    assert.ok(attributes.includes('Expires=Mon, 16 Nov 2026 03:18:29 GMT'))
+    for (const attr of ['HttpOnly', 'SameSite=Strict', 'Secure']) assert.ok(attributes.includes(attr))
+  }
 })
 
 test('new teams inherit profile model endpoints once without nesting the controller', async t => {

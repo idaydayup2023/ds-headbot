@@ -2,7 +2,7 @@
 
 All notable changes to DS Headbot are recorded here.
 
-## Unreleased
+## [0.2.9] - 2026-10-17
 
 ### Added
 
@@ -10,6 +10,8 @@ All notable changes to DS Headbot are recorded here.
 - Show the Feishu connection state on each team card and prevent one Feishu App ID from being attached to multiple enabled teams.
 - Keep Feishu App Secrets in an owner-only credential file outside project checkouts and team configuration; never return or write secret values to generated DSH patches.
 - Refresh a team's Feishu binding when its selected DS Bot moves to a new DSH session.
+
+## Unreleased
 
 ## [0.2.8] - 2026-10-17
 

@@ -2,6 +2,19 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.4] - 2026-10-17
+
+### Added
+
+- Edit team display names and ports in the instance list; port changes stop and restart active teams, with recovery to the original settings if the new port fails to start.
+- A sequential **全部更新 DS Bot** action for all managed instances.
+- Check `ds-bot@latest` before starting an already provisioned team; if the package registry is unavailable, keep the installed version running and report the update failure.
+
+### Changed
+
+- Rename the team creation section to **创建团队**.
+- New teams continue to install the current `ds-bot` release on first start.
+
 ## [0.2.3] - 2026-10-17
 
 ### Fixed

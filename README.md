@@ -1,6 +1,6 @@
 # DS Headbot
 
-Current release: **0.2.3**. Communication file transfers resolve against the DS Bot workspace and preserve compatibility with the earlier Headbot workspace.
+Current release: **0.2.4**. The manager can edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -60,7 +60,7 @@ The manager page can download the generated Caddyfile. The plugin does not overw
 
 ## Add and manage instances
 
-Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifier, display name, and unique port. On its first start, Headbot:
+Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifier, display name, and unique port. The team list lets you edit its display name and port; changing a running team's port stops and restarts it on the new port while preserving its previous running state. On its first start, Headbot:
 
 1. creates `<DSH_HOME>/headbot/teams/<id>/home` as the team's isolated DSH data home;
 2. copies the controller's `settings.yaml`, model entries (`llm-*` and `agent-default-model`) from its Web profile patch, and stored credentials when present, removing the controller's browser-session signing grant;
@@ -71,7 +71,7 @@ The copied model settings and credentials are a one-time starting point. After p
 
 Use `teamPlugins` for required environment plugins, such as a locally maintained network fetch fix: `teamPlugins: ["/absolute/path/network-fix.tgz"]`. These packages are installed when provisioning a new instance. Controller plugins and bot state are not copied wholesale. Later changes to this list do not automatically alter already provisioned teams; install the needed package into their Web profiles during a maintenance window.
 
-Use the manager to start, stop, restart, or update ds-bot for a team. Updating runs `dsh plugin --profile web update --latest ds-bot` against that team's isolated DSH home and then restarts the instance. Teams with auto-start enabled resume when the controller DSH starts.
+Use the manager to start, stop, restart, or update ds-bot for a team. **全部更新 DS Bot** updates the instances one by one and restarts each after its update. Starting or restarting an existing team also runs `dsh plugin --profile web update --latest ds-bot` against that team's isolated DSH home before launching it. If the registry is unavailable, Headbot reports the update error and starts the already installed version so the team remains available. Teams with auto-start enabled resume when the controller DSH starts and check for the latest package as they start.
 
 Deleting an instance stops its process, cancels automatic restarts, revokes its communication credential, removes its active definition, and moves its files to `<DSH_HOME>/headbot/archives/<team-id>-<instance-id>-<time>/`. The archive includes an owner-only `instance.json` definition for recovery. Runtime logs are retained under `logs/<team-id>-<instance-id>.log`. The UI requests confirmation and preserves the data. Recreating the same team ID creates a new identity and an empty inbox. Historical communication and attachment copies remain available to the controller's audit reviewer. For recovery, stop the controller, back up its data, restore the archived directory to `teams/<id>`, and restore its `instance.json` team entry to schema 2 `teams.json`, checking ID and port conflicts before restarting.
 

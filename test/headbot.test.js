@@ -29,8 +29,9 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const fake = path.join(root, 'fake-dsh.mjs')
-  await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync,existsSync} from 'node:fs';
-const args=process.argv.slice(2);if(args[0]==='plugin')process.exit(0);
+  const pluginLog = path.join(root, 'plugin-commands.log')
+  await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync,existsSync,appendFileSync} from 'node:fs';
+const args=process.argv.slice(2);if(args[0]==='plugin'){appendFileSync(${JSON.stringify(pluginLog)},args.join(' ')+'\\n');process.exit(0)}
 const value=key=>args[args.indexOf(key)+1];
 if(!readFileSync(value('--patch'),'utf8').includes('team-plugin.js'))process.exit(2);
 if(!process.env.HEADBOT_TEAM_TOKEN||process.cwd()!==realpathSync(process.env.HEADBOT_TEAM_FILES_ROOT))process.exit(3);
@@ -39,25 +40,32 @@ http.createServer((_req,res)=>{res.statusCode=Date.now()<readyAt?404:200;res.end
 console.log('dsh web: '+value('--public-url')+'?token=test-secret');`)
   const manager = new HeadbotManager({ dataDir: path.join(root, 'headbot'), dshHome: path.join(root, 'home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port() }, { parentPort: await port(), logger: quiet })
   t.after(() => manager.close())
-  return { root, manager, fake }
+  return { root, manager, fake, pluginLog }
 }
 
 async function add(manager, id) {
   return manager.createTeam({ id, name: id.toUpperCase(), port: await port(), autoStart: false })
 }
 
-test('runtime create/start/stop/restart/delete archives data and revokes identity', async t => {
-  const { manager } = await fixture(t)
+test('runtime create/edit/start/stop/restart/delete archives data and revokes identity', async t => {
+  const { manager, pluginLog } = await fixture(t)
   await Promise.all([manager.listTeams(), manager.listTeams()])
   const first = await add(manager, 'alpha')
   const token = manager.findTeam('alpha').communicationToken
   assert.equal((await manager.authenticateTeam('Bearer ' + token)).instanceId, first.instanceId)
   assert.equal(JSON.stringify(first).includes(token), false)
+  const changedPort = await port()
+  const edited = await manager.updateTeam('alpha', { port: changedPort, name: 'Alpha Research' })
+  assert.equal(edited.name, 'Alpha Research')
+  assert.equal(edited.port, changedPort)
   await assert.rejects(manager.updateTeam('alpha', { port: await port(), name: '' }), { statusCode: 400 })
-  assert.equal((await manager.getTeam('alpha')).port, first.port)
+  assert.equal((await manager.getTeam('alpha')).port, changedPort)
   await manager.startTeam('alpha')
   const running = await manager.getTeam('alpha')
   assert.equal(running.status, 'running', running.message)
+  await manager.stopTeam('alpha')
+  await manager.startTeam('alpha')
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot/)
   await manager.stopTeam('alpha')
   assert.equal((await manager.getTeam('alpha')).status, 'stopped')
   await manager.restartTeam('alpha')
@@ -274,6 +282,10 @@ test('HTTP admission separates browser management from team access and plugin to
 
 test('manager page exposes deletion and audit controls with valid script syntax', () => {
   const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh' })
+  assert.match(html, /创建团队/)
+  assert.match(html, /全部更新 DS Bot/)
+  assert.match(html, /团队名称/)
+  assert.match(html, /独立服务端口/)
   assert.match(html, /删除实例/)
   assert.match(html, /团队通信审计/)
   assert.match(html, /导出完整审计档案/)

@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current release: **0.3.1**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
+Current release: **0.3.2**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -82,7 +82,7 @@ Use `teamPlugins` for required environment plugins, such as a locally maintained
 
 ### Per-team Feishu bot
 
-Select **编辑** on a team to configure a Feishu App ID, App Secret, and the DS Bot that should receive its messages. Each enabled team must use its own Feishu App ID. Headbot installs `@zyfgood/dsh-feishu-bot@0.8.6` into that team's isolated DSH Web profile and configures its Feishu WebSocket connection. The team card shows a compact connection badge without exposing the App ID or Bot ID. If Headbot has not received a connection confirmation from the plugin logs, it says **状态待确认** rather than implying that a connection is still being established. Feishu does not need an inbound public callback URL or a new service port. The Agent Mac needs outbound access to Feishu.
+Select **编辑** on a team to configure a Feishu App ID, App Secret, and the DS Bot that should receive its messages. Choose exactly one of **启用飞书** and **关闭飞书**; deleting a saved App Secret is a separate action. Each enabled team must use its own Feishu App ID. Headbot installs `@zyfgood/dsh-feishu-bot@0.8.6` into that team's isolated DSH Web profile and configures its Feishu WebSocket connection. The team card shows a compact connection badge without exposing the App ID or Bot ID. Headbot reads ready, reconnect, disconnect, and connection-error events from DSH plugin output; if no status event is available, it says **状态待确认** rather than implying a connection is still being established. Feishu does not need an inbound public callback URL or a new service port. The Agent Mac needs outbound access to Feishu.
 
 Create and publish a Feishu self-built app with the bot capability, subscribe to `im.message.receive_v1`, and grant message receive and bot-send permissions. Enter its `cli_...` App ID and App Secret in the team editor, then choose a Bot from that team's saved DS Bot list. When the team is running, saving a changed Feishu configuration stops and restarts that team to load the new binding. The bridge sends Feishu messages to the selected Bot's current DSH session and replies to the originating Feishu chat. If DS Bot moves to a new session after a long conversation, Headbot detects the change and restarts that team to refresh the binding.
 

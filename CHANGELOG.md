@@ -4,6 +4,14 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.2] - 2026-10-17
+
+### Fixed
+
+- Read Feishu connection, disconnect, reconnect, and connection-error events from DSH plugin output so the management status follows the latest logged event.
+- Use one mutually exclusive radio group to enable or disable Feishu; keep removal of a saved App Secret as a separate action.
+- Align team name and port inputs on one row, at a consistent width and spacing.
+
 ## [0.3.1] - 2026-10-17
 
 ### Fixed

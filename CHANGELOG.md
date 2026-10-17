@@ -13,6 +13,17 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.0] - 2026-10-17
+
+### Added
+
+- Show the DSH Web controller as a protected default instance in the team list, with editable display name and Feishu settings, restart, and DS Bot update actions. Its port and autostart are fixed; stop, port change, and delete operations are rejected by the API.
+- Support Feishu bot configuration for the default instance, storing credentials in owner-only Headbot data and the DSH user's private environment file.
+
+### Fixed
+
+- Keep team editor inputs mounted during the four-second status poll so periodic refreshes no longer steal keyboard focus.
+
 ## [0.2.8] - 2026-10-17
 
 ### Fixed

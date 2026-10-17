@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DS Headbot",
-    "description": "Manage isolated DeepSeek Harness and DS Bot instances for multiple teams."
+    "description": "Manage DeepSeek Harness and DS Bot instances with audited team messages and file transfers."
   }
 }

@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.3] - 2026-10-17
+
+### Fixed
+
+- Resolve relative transfer files from the DS Bot workspace, while retaining access to files in the legacy Headbot workspace.
+- Save received attachments in the DS Bot workspace inbox and add a live verification case using that workspace.
+
 ## [0.2.2] - 2026-10-17
 
 ### Fixed

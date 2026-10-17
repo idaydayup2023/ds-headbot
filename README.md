@@ -1,6 +1,6 @@
 # DS Headbot
 
-Current release: **0.2.2**. Production acceptance fixes cover browser login cookie scoping, startup readiness and asynchronous team creation from the manager page.
+Current release: **0.2.3**. Communication file transfers resolve against the DS Bot workspace and preserve compatibility with the earlier Headbot workspace.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -77,14 +77,14 @@ Deleting an instance stops its process, cancels automatic restarts, revokes its 
 
 ## Team communication and audit
 
-Every managed instance loads the `ds-headbot-communications` DSH tool plugin through a generated patch. The patch references the controller's installed package, so no extra DSH installation or nested Headbot controller is needed. Restart instances after upgrading Headbot to load the new plugin code. The instance working directory is `<DSH_HOME>/headbot/teams/<id>/workspace`; DSH settings and credentials remain in the sibling `home` directory. Existing files previously created at the team directory root remain there; move working files into `workspace` when adopting version 0.2.
+Every managed instance loads the `ds-headbot-communications` DSH tool plugin through a generated patch. The patch references the controller's installed package, so no extra DSH installation or nested Headbot controller is needed. Restart instances after upgrading Headbot to load the new plugin code. DSH launches from `<DSH_HOME>/headbot/teams/<id>/workspace`, while DS Bot uses `<DSH_HOME>/headbot/teams/<id>/home/bot/workspace`. File-send paths resolve relative to the DS Bot workspace first, then the earlier Headbot workspace; absolute paths are accepted only inside one of those two directories. Downloads go to the DS Bot workspace's `inbox`. DSH settings and credentials remain in the sibling `home` directory.
 
 | Bot tool | Behavior |
 | --- | --- |
 | `headbot_list_teams` | Discover recipient IDs and their current status |
-| `headbot_send_message` | Send text and files from the instance workspace |
+| `headbot_send_message` | Send text and files from the DS Bot workspace, with compatibility for the earlier Headbot workspace |
 | `headbot_receive_messages` | Read the durable inbox using a replay cursor |
-| `headbot_download_attachment` | Verify and save a received file under `workspace/inbox` |
+| `headbot_download_attachment` | Verify and save a received file under the DS Bot workspace's `inbox` |
 
 Messages are available immediately after durable audit storage, including when the receiving team is stopped. The receiving bot reads them with its inbox tool; this release does not automatically trigger a model run. Each instance gets a random credential; the broker derives the sender from it, and team credentials cannot access instance management or the controller's audit API.
 

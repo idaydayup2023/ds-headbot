@@ -1,0 +1,10 @@
+- insert:
+    - id: ds-headbot
+      name: ds-headbot
+      config:
+        ingressPort: 3180
+        controllerPath: dsh
+        teamsPath: teams
+        dshCommand: dsh
+        botPackage: ds-bot
+        inheritModelSettings: true

@@ -1,3 +1,4 @@
+
 # Self-update from the management page
 
 The **DS Headbot 版本** card reports the version loaded by the current DSH Web profile and checks the latest stable GitHub release. A failed or timed-out check leaves the update action disabled. The release tag must be a stable `vMAJOR.MINOR.PATCH` version.
@@ -10,7 +11,7 @@ When an administrator chooses **升级到 vX.Y.Z**, Headbot runs a detached upda
 4. Installs the new local package into the controller's `web` profile.
 5. Restarts DSH and waits for its Headbot release route to respond. If install or restart verification fails, it attempts to reinstall the rollback package and restart DSH again.
 
-The post-restart health check calls the DSH Web server directly on its local port at `/api/ds-headbot/v1/release`; it does not include the public controller path prefix such as `/dsh`.
+The post-restart health check calls the DSH Web server directly on its local port at `/api/ds-headbot/v1/release`; it does not include the public controller path prefix such as `/dsh`. The detached updater runs the packaged `lib/release-updater.js` file in CLI mode. If that process exits unsuccessfully before writing its own result, the controller records the attempt as failed so the manager can offer a retry instead of remaining stuck in a downloading state.
 
 Downloaded source archives, packed release and rollback packages, and update status are kept under `$DSH_HOME/headbot/updates/` and `$DSH_HOME/headbot/headbot-update-state.json`, outside project checkouts and team workspaces. Headbot updates do not rewrite team configuration or communication audit data.
 

@@ -150,6 +150,10 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     if (method === 'GET' && route === '/teams') {
       return json(res, 200, { teams: await manager.listTeams() })
     }
+    const teamBots = route.match(/^\/teams\/([a-z0-9][a-z0-9-]{0,47})\/bots$/)
+    if (method === 'GET' && teamBots) {
+      return json(res, 200, { bots: await manager.getTeamBots(teamBots[1]) })
+    }
     if (method === 'POST' && route === '/teams') {
       const body = await readJson(req)
       const team = await manager.createTeam(body)

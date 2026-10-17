@@ -10,7 +10,7 @@ Version 0.1 had runtime creation, start, stop, restart, auto-start and DS Bot up
 
 Node 25.8.1; `npm install --ignore-scripts --no-package-lock`; `npm test`.
 
-Seven checks pass:
+Eight checks pass:
 
 1. Create, start, stop, restart and delete a simulated DSH instance; preserve archived files, revoke its token, and allow a new identity on the same ID/port.
 2. Send to an offline team; preserve binary attachment bytes across broker restart; replay with cursors; safely retry with a request ID; isolate other teams and reused IDs.
@@ -19,6 +19,7 @@ Seven checks pass:
 5. Back up and migrate schema 1; preserve schema 2 identities across reload; reject corrupted identities without rewriting them.
 6. Exercise real HTTP routes and the communication plugin tools: controller/session admission, team-token isolation, source symlink rejection, file send/read/download, reviewer download, export and revocation.
 7. Compile the manager page script and check deletion/audit controls.
+8. Seed profile model endpoints/defaults once, exclude controller/UI entries, preserve independent team edits and reject invalid extra package references.
 
 `git diff --check`, JavaScript syntax checks, and `npm pack --dry-run` also pass. The package includes both plugins, the audit module, protocol/recovery documentation and the reusable installed-DSH check script.
 
@@ -37,6 +38,16 @@ Ran `scripts/verify-installed-dsh.mjs` with the installed DSH package path. It l
 
 Model requests: 0. This check did not change production profiles, processes, ingress, certificates or ports. Its source and output were recorded on Agent under `~/Library/Application Support/DeepSeekHarness/maintenance/headbot-check.erV4uC/` (`compatibility.json` and `compatibility.stderr`).
 
-## Remaining deployment verification
+## Real isolated integration and PR review
 
-The full DSH + DS Bot + Caddy lifecycle has not been deployed or exercised on Agent. After installing the reviewed version, verify two real teams, their authenticated HTTPS paths, bot-visible tools, message/file exchange and the manager's audit UI. The local tests use a simulated DSH child process; the Agent check verifies real tool-registry compatibility only. The protocol's polling and shared-user isolation boundaries are described in the README and protocol document.
+The subsequent PR review identified missing inheritance of Spark endpoints stored in `profiles/web/cordis.patch.yml`. This is fixed by selectively copying model entries once. Required environment plugins can be installed through `teamPlugins`; the Agent deployment supplies its existing fake-IP-safe fetch package. Checkpoint and object directory entries are also synchronized to disk.
+
+On Agent-Mac, an isolated home under `~/Library/Application Support/DeepSeekHarnessMaintenance/headbot-20261017/stage-home` used the existing DSH executable, controller port 13080 and ingress 3181. `scripts/verify-live-headbot.mjs` passed with two real DSH + DS Bot instances:
+
+- simultaneous independent processes, scoped login cookies and relative-path client assets;
+- creation, stop, start, restart and deletion with preserved archives;
+- four tools registered through the installed Cordis/tool runtime, offline text and binary file transfer, recipient download and matching SHA-256;
+- reviewer file bytes, full text audit events and verified export;
+- controller 401 admission and cross-origin 403 rejection.
+
+No model requests were made. The tools were invoked through their real registered definitions by the verification runner; a model deciding to use those tools and automated inbox-triggered bot turns are not claimed. Test instances were deleted, retaining their archives. Detailed output is `stage-verification.json` in the maintenance directory. Production deployment, public Caddy TLS and browser acceptance are recorded separately on Agent after merging; the protocol's polling and shared-user isolation boundaries are described in the README and protocol document.

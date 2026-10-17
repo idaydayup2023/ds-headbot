@@ -61,11 +61,13 @@ The manager page can download the generated Caddyfile. The plugin does not overw
 Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifier, display name, and unique port. On its first start, Headbot:
 
 1. creates `<DSH_HOME>/headbot/teams/<id>/home` as the team's isolated DSH data home;
-2. copies the controller's `settings.yaml` and stored credentials when present, removing the controller's browser-session signing grant from the copied credentials;
-3. installs `ds-bot` into that team's DSH `web` profile; and
+2. copies the controller's `settings.yaml`, model entries (`llm-*` and `agent-default-model`) from its Web profile patch, and stored credentials when present, removing the controller's browser-session signing grant;
+3. installs `ds-bot` and any configured `teamPlugins` into that team's DSH `web` profile; and
 4. launches a separate DSH process on `127.0.0.1:<team-port>` with the team's public URL and trusted host.
 
 The copied model settings and credentials are a one-time starting point. After provisioning, each team's files can be changed independently in its own DSH home. Sessions, ds-bot configuration, installed profile packages, logs, and later edits stay in that team's directory. Data remains after stopping or removing this bundle. Nothing is written into a project checkout.
+
+Use `teamPlugins` for required environment plugins, such as a locally maintained network fetch fix: `teamPlugins: ["/absolute/path/network-fix.tgz"]`. These packages are installed when provisioning a new instance. Controller plugins and bot state are not copied wholesale. Later changes to this list do not automatically alter already provisioned teams; install the needed package into their Web profiles during a maintenance window.
 
 Use the manager to start, stop, restart, or update ds-bot for a team. Updating runs `dsh plugin --profile web update --latest ds-bot` against that team's isolated DSH home and then restarts the instance. Teams with auto-start enabled resume when the controller DSH starts.
 
@@ -106,6 +108,7 @@ If changing the bundle's `config` in a Cordis patch, restate every field because
     dshCommand: dsh
     botPackage: ds-bot
     inheritModelSettings: true
+    teamPlugins: []
 ```
 
 An optional `dshHome` setting can point Headbot at a non-default controller DSH home. Team data remains under `<dshHome>/headbot/`.
@@ -125,8 +128,10 @@ Version 0.2 upgrades `teams.json` to schema 2 and saves the original schema 1 fi
 - All exchanges made through the communication plugin pass through the audit module. A same-user process with unrestricted filesystem or network tools can still use other channels; enforcing auditing against those channels requires additional OS/container isolation. The local hash chain detects corruption and changes against its checkpoint, but an administrator who can rewrite both files is outside this trust boundary.
 - HTTPS certificate lifecycle is delegated to Caddy. With `tls internal`, each client device must trust Caddy's CA.
 - This release targets the DSH `web` profile and its `--public-url` prefix-stripping deployment contract.
-- Live DSH/Caddy integration should be verified on the target host after installation; the PR itself has not been deployed there.
+- Two real DSH + ds-bot instances were verified in an isolated Agent-Mac home, including path login, client assets, lifecycle, communication tools and audit exports. Production deployment and TLS acceptance are recorded separately on the host.
 
 In a source checkout, run `npm install --ignore-scripts` and `npm test` for the lifecycle, HTTP admission, tool communication, attachment, migration, and audit fault checks. These checks use a simulated DSH process and do not call a model.
 
 To check a future DSH upgrade, run `node scripts/verify-installed-dsh.mjs /path/to/dsh-installation`. This loads the installed Cordis and DSH tool registry in an isolated process and verifies registration of all four communication tools, without modifying an existing profile or calling a model. See [verification record](docs/verification-2026-10-17.md) for the current results.
+
+For an authorized live lifecycle check, run `node scripts/verify-live-headbot.mjs /path/to/config.json` on the controller host. The configuration names `home`, `log` (controller startup log), `installation`, `ingressPort`, `controllerPort`, `publicHost` and optional `output`/`expectedTeamPlugins`. It authenticates with the current launch URL internally, creates two uniquely named temporary teams, checks their pages and tools, then deletes only those definitions. Their archived files and audit records remain for inspection. It never prints credentials or calls a model. Verify the public TLS entry and browser separately.

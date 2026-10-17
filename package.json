@@ -33,7 +33,7 @@
     "icon.svg",
     "deploy/Caddyfile",
     "docs/*.md",
-    "scripts/verify-installed-dsh.mjs"
+    "scripts/*.mjs"
   ],
   "dependencies": {
     "yaml": "^2.8.1"

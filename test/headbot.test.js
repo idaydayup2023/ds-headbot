@@ -10,6 +10,7 @@ import { AuditedCommunications } from '../lib/communications.js'
 import { apply as applyHeadbot } from '../index.js'
 import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
+import { parse } from 'yaml'
 
 const quiet = { warn() {}, error() {} }
 const apiPath = '/api/ds-headbot/v1'
@@ -97,6 +98,24 @@ test('offline messages, binary attachments, safe retries and replay survive cont
   await assert.rejects(reloaded.inbox(b), { statusCode: 401 })
   assert.deepEqual((await reloaded.inbox(manager.identity(manager.findTeam('beta')))).messages, [])
   assert.equal((await reloaded.audit({ team: 'beta' })).events.length, 3)
+})
+
+test('new teams inherit profile model endpoints once without nesting the controller', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await mkdir(path.join(manager.parentHome, 'profiles/web'), { recursive: true })
+  await writeFile(path.join(manager.parentHome, 'profiles/web/cordis.patch.yml'), `- id: llm-pi-ai\n  config:\n    providers:\n      spark:\n        baseURL: http://192.168.1.9:8888/v1\n- id: agent-default-model\n  config:\n    provider: spark\n    model: example\n- id: ds-headbot\n  config:\n    ingressPort: 3180\n- id: ui-chat\n  config: {}\n`)
+  await add(manager, 'models')
+  const team = manager.findTeam('models')
+  await manager.provisionHome(team)
+  const patch = path.join(manager.root, 'teams/models/home/profiles/web/cordis.patch.yml')
+  const entries = parse(await readFile(patch, 'utf8'))
+  assert.deepEqual(entries.map(entry => entry.id), ['llm-pi-ai', 'agent-default-model'])
+  assert.equal(entries[0].config.providers.spark.baseURL, 'http://192.168.1.9:8888/v1')
+  await writeFile(patch, '- id: agent-default-model\n  config: {model: independently-edited}\n')
+  await manager.provisionHome(team)
+  assert.equal(parse(await readFile(patch, 'utf8'))[0].config.model, 'independently-edited')
+  assert.throws(() => new HeadbotManager({ teamPlugins: ['--unsafe'] }, { parentPort: 3080 }), /teamPlugins/)
 })
 
 test('audit failures block send, receive and file delivery; tampering is detected', async t => {

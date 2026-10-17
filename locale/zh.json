@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DS Headbot",
-    "description": "为多个团队管理相互隔离的 DeepSeek Harness 与 DS Bot 运行副本。"
+    "description": "管理多个 DeepSeek Harness 与 DS Bot 运行副本，并提供经过审计的团队消息和资料传输。"
   }
 }

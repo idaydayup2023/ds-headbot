@@ -1,6 +1,7 @@
 import { HeadbotManager } from './lib/manager.js'
 import { startIngress } from './lib/ingress.js'
 import { renderManagerPage } from './lib/page.js'
+import { AuditedCommunications } from './lib/communications.js'
 
 export const name = 'ds-headbot'
 export const inject = ['connection', 'webServer']
@@ -18,6 +19,7 @@ export function apply(ctx, config = {}) {
     logger: ctx.logger,
   })
   const runtimeConfig = { ...config, publicHost: manager.publicHost }
+  const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
 
   ctx.effect(() => {
     const pageRoute = ctx.webServer.register({
@@ -46,13 +48,23 @@ export function apply(ctx, config = {}) {
       kind: 'prefix',
       path: API_PATH,
       handler: async (req, res) => {
+        const pathname = new URL(req.url ?? '/', 'http://headbot.local').pathname
+        if (pathname.startsWith(`${API_PATH}/comms/v1/`)) {
+          try {
+            const actor = await manager.authenticateTeam(req.headers.authorization)
+            if (!actor) return json(res, 401, { error: 'invalid or revoked team credential' })
+            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor)
+          } catch (error) {
+            return json(res, error.statusCode ?? 503, { error: error.message })
+          }
+        }
         const rejection = ctx.connection.requestRejection(req)
         if (rejection !== undefined) {
           res.writeHead(rejection, { 'Cache-Control': 'no-store' })
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
           return
         }
-        await handleApiRequest(req, res, manager, runtimeConfig, ctx.logger)
+        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger)
       },
     })
 
@@ -82,7 +94,7 @@ export function apply(ctx, config = {}) {
   }, 'ds-headbot: manager and team processes')
 }
 
-async function handleApiRequest(req, res, manager, runtimeConfig, logger) {
+export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor) {
   const url = new URL(req.url ?? '/', 'http://headbot.local')
   const route = url.pathname.slice(API_PATH.length) || '/'
   const method = req.method ?? 'GET'
@@ -90,6 +102,28 @@ async function handleApiRequest(req, res, manager, runtimeConfig, logger) {
   res.setHeader('X-Content-Type-Options', 'nosniff')
 
   try {
+    if (actor) {
+      if (method === 'GET' && route === '/comms/v1/teams') return json(res, 200, await communications.directory(actor))
+      if (method === 'POST' && route === '/comms/v1/messages') return json(res, 201, await communications.send(actor, await readJson(req, communications.bodyLimit)))
+      if (method === 'GET' && route === '/comms/v1/inbox') return json(res, 200, await communications.inbox(actor, url.searchParams.get('after') ?? 0, url.searchParams.get('limit') ?? 20))
+      const download = route.match(/^\/comms\/v1\/messages\/([a-f0-9-]{36})\/attachments\/([a-f0-9-]{36})$/)
+      if (method === 'GET' && download) {
+        const { attachment, bytes } = await communications.attachment(actor, download[1], download[2])
+        return json(res, 200, { attachment, contentBase64: bytes.toString('base64') })
+      }
+      return json(res, 404, { error: 'not found' })
+    }
+    if (method === 'GET' && route === '/audit') return json(res, 200, await communications.audit({ team: url.searchParams.get('team') ?? '', before: url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER, limit: url.searchParams.get('limit') ?? 50 }))
+    if (method === 'GET' && route === '/audit/export') {
+      res.setHeader('Content-Disposition', 'attachment; filename="headbot-audit.json"')
+      return json(res, 200, await communications.exportAudit())
+    }
+    const reviewFile = route.match(/^\/audit\/messages\/([a-f0-9-]{36})\/attachments\/([a-f0-9-]{36})$/)
+    if (method === 'GET' && reviewFile) {
+      const { attachment, bytes } = await communications.attachment({ id: 'controller-browser' }, reviewFile[1], reviewFile[2], true)
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, 'Content-Disposition': `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(attachment.name)}` })
+      return res.end(bytes)
+    }
     if (method === 'GET' && route === '/teams') {
       return json(res, 200, { teams: await manager.listTeams() })
     }
@@ -111,6 +145,7 @@ async function handleApiRequest(req, res, manager, runtimeConfig, logger) {
     }
 
     const update = route.match(/^\/teams\/([a-z0-9][a-z0-9-]{0,47})$/)
+    if (method === 'DELETE' && update) return json(res, 200, { deleted: await manager.deleteTeam(update[1]) })
     if (method === 'PATCH' && update) {
       const body = await readJson(req)
       const team = await manager.updateTeam(update[1], body)
@@ -129,23 +164,28 @@ async function handleApiRequest(req, res, manager, runtimeConfig, logger) {
 
     json(res, 404, { error: 'not found' })
   } catch (error) {
-    const status = error.statusCode ?? 400
+    const status = error.statusCode ?? 500
     json(res, status, { error: error.message ?? String(error) })
   }
 }
 
-async function readJson(req) {
-  const chunks = []
-  let size = 0
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > 16 * 1024) {
-      const error = new Error('request body is too large')
-      error.statusCode = 413
-      throw error
-    }
-    chunks.push(chunk)
-  }
+async function readJson(req, maxBytes = 16 * 1024) {
+  const chunks = await new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0, exceeded = false
+    req.on('data', chunk => {
+      if (exceeded) return
+      size += chunk.length
+      if (size > maxBytes) {
+        exceeded = true
+        chunks.length = 0
+        reject(Object.assign(new Error('request body is too large'), { statusCode: 413 }))
+      } else chunks.push(chunk)
+    })
+    req.once('end', () => { if (!exceeded) resolve(chunks) })
+    req.once('error', reject)
+    req.once('aborted', () => reject(Object.assign(new Error('request was aborted'), { statusCode: 400 })))
+  })
   if (chunks.length === 0) return {}
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
@@ -159,6 +199,8 @@ async function readJson(req) {
 function json(res, status, value) {
   const body = JSON.stringify(value)
   res.writeHead(status, {
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
   })

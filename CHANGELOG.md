@@ -2,6 +2,32 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.0] - 2026-10-17
+
+### Added
+
+- Runtime instance deletion with process shutdown, archived data, credential revocation, and protection against identity reuse.
+- The `ds-headbot-communications` DSH tool plugin and the versioned `headbot-team/v1` broker protocol for messages and binary attachments.
+- Offline inboxes, replay cursors, retry request IDs, workspace file boundaries, per-instance identities, and transfer limits.
+- Durable communication auditing with full message text, attachment copies, SHA-256 checks, chained event hashes, and a checkpoint. Audit failures block transfer.
+- A controller audit interface with team filtering, message review, attachment downloads, pagination, and complete archive export.
+- Lifecycle, HTTP, client-tool, state-migration, isolation, persistence, and audit-failure checks.
+
+### Changed
+
+- Team processes work in a dedicated `workspace` directory separate from DSH settings and credentials.
+- Team state migrates to schema 2 after saving a schema 1 backup. Version 0.1 cannot open schema 2; rollback instructions cover complete snapshots.
+- Concurrent initialization and invalid instance updates preserve valid state.
+- New instances also inherit model provider/default entries from the controller's Web profile patch once; `teamPlugins` can install required environment plugins without copying controller state.
+- Audit checkpoints and attachment directory entries are flushed before acknowledging the operation.
+- Added a reusable live DSH verification script; two real instances passed the Agent-Mac isolated lifecycle, path authentication and audited file exchange checks.
+
+### Deployment notes
+
+- Restart managed instances after upgrading the controller to load the communication plugin.
+- Communication uses polling tools; it does not automatically start a bot/model turn.
+- Shared-user processes are not a security sandbox. The audit requirement is enforced for the provided communication channel.
+
 ## [0.1.0] - 2026-10-17
 
 ### Added

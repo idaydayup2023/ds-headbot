@@ -1,11 +1,13 @@
 
 # DS Headbot
 
-Current release: **0.2.9**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
+Current release: **0.3.0**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
-Each team receives its own DSH home, `web` profile state, ds-bot configuration, workspace, process, and loopback service port. DS Headbot provides one management page to create, start, stop, restart, delete, or update each instance while the controller stays running. The DSH executable is shared, while team data and runtime state remain separate and outside project checkouts. Its bundled communication plugin lets bot teams exchange messages and files through a central audit module.
+The controller's DSH Web service is also shown as the protected **default instance** (normally port 3080). It uses the DSH profile and data that already exist; Headbot does not launch a second copy. The default instance can be renamed, restarted, updated, and configured for Feishu, but its port and autostart are fixed and it cannot be stopped or deleted. Restarting it briefly interrupts Headbot and its managed processes; the controller resumes management when DSH returns, and child instances with autostart enabled start again.
+
+Each additional team receives its own DSH home, `web` profile state, ds-bot configuration, workspace, process, and loopback service port. DS Headbot provides one management page to create, start, stop, restart, delete, or update those instances while the default controller stays running. The DSH executable is shared, while team data and runtime state remain separate and outside project checkouts. Its bundled communication plugin lets bot teams exchange messages and files through a central audit module.
 
 ## Access model
 
@@ -70,6 +72,12 @@ Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifie
 
 The copied model settings and credentials are a one-time starting point. After provisioning, each team's files can be changed independently in its own DSH home. Sessions, ds-bot configuration, installed profile packages, logs, and later edits stay in that team's directory. Data remains after stopping or removing this bundle. Nothing is written into a project checkout.
 
+### Protected default instance
+
+The first card is the controller already running in the DSH Web profile, usually on port 3080. Its display name is stored in `<DSH_HOME>/headbot/controller.json`; it is not a child entry in `teams.json`. Headbot fixes its port to the controller's actual DSH Web port and forces autostart on. The page hides stop, port-edit, and delete controls, and the management API rejects those operations as well. The card still offers name editing, restart, DS Bot update, and Feishu settings.
+
+Restarting the default instance restarts the DSH LaunchAgent (`com.deepseek.dsh` by default), so the management page and its child processes disconnect briefly. When DSH starts again, Headbot resumes and starts child teams whose own autostart option is enabled. Custom service managers should set `restartCommand` and `restartArgs` as described below.
+
 Use `teamPlugins` for required environment plugins, such as a locally maintained network fetch fix: `teamPlugins: ["/absolute/path/network-fix.tgz"]`. These packages are installed when provisioning a new instance. Controller plugins and bot state are not copied wholesale. Later changes to this list do not automatically alter already provisioned teams; install the needed package into their Web profiles during a maintenance window.
 
 ### Per-team Feishu bot
@@ -78,7 +86,7 @@ Select **编辑** on a team to configure a Feishu App ID, App Secret, and the DS
 
 Create and publish a Feishu self-built app with the bot capability, subscribe to `im.message.receive_v1`, and grant message receive and bot-send permissions. Enter its `cli_...` App ID and App Secret in the team editor, then choose a Bot from that team's saved DS Bot list. When the team is running, saving a changed Feishu configuration stops and restarts that team to load the new binding. The bridge sends Feishu messages to the selected Bot's current DSH session and replies to the originating Feishu chat. If DS Bot moves to a new session after a long conversation, Headbot detects the change and restarts that team to refresh the binding.
 
-App Secrets are stored in `<DSH_HOME>/headbot/feishu-secrets.json` with owner-only permissions. The management API only returns whether a secret is stored; it never returns the value. Generated DSH patches contain only environment-variable references, and the secret is passed to the configured team's DSH process. Removing a team removes its saved Feishu secret. This protects the value from project files and other macOS accounts, but teams run under the same macOS user and are not separate operating-system security boundaries; same-account processes and DSH tools may access account-owned data. Only enable Feishu for trusted teams. Feishu messages run with the selected Bot's DSH permissions; group messages require an @mention.
+App Secrets are stored in `<DSH_HOME>/headbot/feishu-secrets.json` with owner-only permissions. The management API only returns whether a secret is stored; it never returns the value. Generated DSH patches contain only environment-variable references, and the secret is passed to the configured team's DSH process. The default instance also has a marked block in `<DSH_HOME>/.env` so the DSH LaunchAgent can load its Feishu credentials on startup; its launcher must source this file before starting DSH. Headbot preserves other `.env` lines. Removing a team removes its saved Feishu secret. This protects the value from project files and other macOS accounts, but teams run under the same macOS user and are not separate operating-system security boundaries; same-account processes and DSH tools may access account-owned data. Only enable Feishu for trusted teams. Feishu messages run with the selected Bot's DSH permissions; group messages require an @mention.
 
 See the [Feishu bridge documentation](https://github.com/zyfgood/dsh-feishu-bot) and the [Feishu bot overview](https://open.feishu.cn/document/client-docs/bot-v3/bot-overview) for app setup details.
 

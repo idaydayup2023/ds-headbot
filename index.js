@@ -148,7 +148,7 @@ export async function handleApiRequest(req, res, manager, communications, runtim
       return res.end(bytes)
     }
     if (method === 'GET' && route === '/teams') {
-      return json(res, 200, { teams: await manager.listTeams() })
+      return json(res, 200, { teams: await manager.listInstances() })
     }
     const teamBots = route.match(/^\/teams\/([a-z0-9][a-z0-9-]{0,47})\/bots$/)
     if (method === 'GET' && teamBots) {
@@ -164,6 +164,12 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     const action = route.match(/^\/teams\/([a-z0-9][a-z0-9-]{0,47})\/(start|stop|restart|update-bot)$/)
     if (method === 'POST' && action) {
       const [, id, operation] = action
+      if (id === 'default' && (operation === 'start' || operation === 'stop')) {
+        return json(res, 409, { error: 'the default DSH controller is always running; start and stop operations are unavailable' })
+      }
+      if (id === 'default' && operation === 'restart') {
+        return json(res, 202, { team: await manager.restartTeam(id) })
+      }
       if (operation === 'start') void manager.startTeam(id).catch(error => logger?.warn?.(`[ds-headbot] start ${id}: ${error.message}`))
       if (operation === 'stop') void manager.stopTeam(id).catch(error => logger?.warn?.(`[ds-headbot] stop ${id}: ${error.message}`))
       if (operation === 'restart') void manager.restartTeam(id).catch(error => logger?.warn?.(`[ds-headbot] restart ${id}: ${error.message}`))

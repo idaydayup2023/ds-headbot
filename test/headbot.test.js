@@ -309,7 +309,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.2.5')
+  assert.equal(headbotVersion, '0.2.6')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
@@ -388,6 +388,7 @@ test('release worker verifies the tagged package, installs it, and retains a rol
   execFileSync('/usr/bin/tar', ['-czf', sourceTar, '-C', root, 'archive-root'])
   const sourceBytes = await readFile(sourceTar)
   const dshCalls = []
+  const fetchUrls = []
   const runCommand = async (command, args, options = {}) => {
     if (command === '/usr/bin/tar') {
       return { stdout: execFileSync(command, args, { cwd: options.cwd }).toString(), stderr: '' }
@@ -414,13 +415,18 @@ test('release worker verifies the tagged package, installs it, and retains a rol
     targetVersion: '0.2.6', tag: 'v0.2.6', parentHome, managerRoot, profile: 'web', dshCommand: 'dsh', pnpmCommand: 'pnpm',
     restart: { command: '/usr/bin/true', args: [] }, controllerPath: 'dsh', parentPort: 3080,
   }, {
-    fetchImpl: async () => ({ ok: true, status: 200, async arrayBuffer() { return sourceBytes } }),
+    fetchImpl: async url => {
+      fetchUrls.push(String(url))
+      if (String(url) === 'http://127.0.0.1:3080/api/ds-headbot/v1/release') return { ok: false, status: 401 }
+      return { ok: true, status: 200, async arrayBuffer() { return sourceBytes } }
+    },
     runCommand,
-    healthCheck: async () => true,
   })
   assert.equal(result.state, 'completed')
   assert.equal(await readFile(path.join(installedPackage, 'package.json'), 'utf8').then(value => JSON.parse(value).version), '0.2.6')
   assert.ok(await readFile(result.rollbackPackage))
+  assert.ok(fetchUrls.includes('http://127.0.0.1:3080/api/ds-headbot/v1/release'))
+  assert.ok(!fetchUrls.includes('http://127.0.0.1:3080/dsh/api/ds-headbot/v1/release'))
   assert.equal(dshCalls.length, 1)
   assert.equal((await readFile(path.join(managerRoot, 'headbot-update-state.json'), 'utf8').then(JSON.parse)).state, 'completed')
 })

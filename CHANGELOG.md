@@ -2,6 +2,12 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.6] - 2026-10-17
+
+### Fixed
+
+- Check DSH health on its direct local Web API route after an upgrade, independent of the public `/dsh/` path prefix, preventing a healthy upgrade from being misclassified and rolled back.
+
 ## [0.2.5] - 2026-10-17
 
 ### Added

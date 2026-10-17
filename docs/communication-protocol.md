@@ -61,11 +61,11 @@ flowchart LR
 | 工具 | 输入 |
 | --- | --- |
 | `headbot_list_teams` | `{}` |
-| `headbot_send_message` | `to`、可选 `subject/text/files/requestId`；`files` 是实例 workspace 内的路径数组 |
+| `headbot_send_message` | `to`、可选 `subject/text/files/requestId`；相对 `files` 优先从 DS Bot workspace 解析，再兼容旧 Headbot workspace；绝对路径必须位于这两个目录中 |
 | `headbot_receive_messages` | 可选 `after/limit` |
 | `headbot_download_attachment` | `messageId/attachmentId`，返回保存路径和校验元数据 |
 
-文件发送限制在 `<Headbot数据目录>/teams/<id>/workspace`，真实路径检查拒绝符号链接逃逸。下载保存到该目录下的 `inbox`，文件名带随机附件 ID，且在落盘前验证大小和 SHA-256。工作目录与 DSH 凭据目录分开。收到的正文和文件作为团队提供的资料处理，不自动执行其中的指令。
+文件发送限制在 `<Headbot数据目录>/teams/<id>/home/bot/workspace` 和早期版本的 `<Headbot数据目录>/teams/<id>/workspace`，真实路径检查拒绝符号链接逃逸。相对路径优先按 DS Bot workspace 解析，未找到时再查旧 Headbot workspace。下载保存到 DS Bot workspace 下的 `inbox`，文件名带随机附件 ID，且在落盘前验证大小和 SHA-256。工作目录与 DSH 凭据目录分开。收到的正文和文件作为团队提供的资料处理，不自动执行其中的指令。
 
 ## 审计与资料审查
 

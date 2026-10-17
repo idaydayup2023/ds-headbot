@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -235,32 +235,38 @@ test('HTTP admission separates browser management from team access and plugin to
   assert.equal((await fetch(base + '/comms/v1/messages', { method: 'POST', headers: { Authorization: 'Bearer ' + a.communicationToken }, body: 'x'.repeat(70000) })).status, 413)
   assert.equal((await fetch(base + '/audit', { headers: { Authorization: 'Bearer ' + a.communicationToken } })).status, 401)
   assert.equal((await fetch(base + '/teams/beta', { method: 'DELETE', headers: { Authorization: 'Bearer ' + a.communicationToken } })).status, 401)
-  const envKeys = ['HEADBOT_TEAM_ID', 'HEADBOT_TEAM_TOKEN', 'HEADBOT_BROKER_URL', 'HEADBOT_TEAM_FILES_ROOT']
+  const envKeys = ['HEADBOT_TEAM_ID', 'HEADBOT_TEAM_TOKEN', 'HEADBOT_BROKER_URL', 'HEADBOT_TEAM_FILES_ROOT', 'HEADBOT_TEAM_BOT_FILES_ROOT']
   const old = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
   t.after(() => { for (const key of envKeys) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key] })
   async function toolsFor(team) {
     const filesRoot = path.join(root, team.id + '-files')
+    const botFilesRoot = path.join(root, team.id + '-bot-files')
     await mkdir(filesRoot)
-    Object.assign(process.env, { HEADBOT_TEAM_ID: team.id, HEADBOT_TEAM_TOKEN: team.communicationToken, HEADBOT_BROKER_URL: base + '/comms/v1', HEADBOT_TEAM_FILES_ROOT: filesRoot })
+    await mkdir(botFilesRoot)
+    Object.assign(process.env, { HEADBOT_TEAM_ID: team.id, HEADBOT_TEAM_TOKEN: team.communicationToken, HEADBOT_BROKER_URL: base + '/comms/v1', HEADBOT_TEAM_FILES_ROOT: filesRoot, HEADBOT_TEAM_BOT_FILES_ROOT: botFilesRoot })
     const tools = new Map()
     applyTeam({ tools: { register(tool) { tools.set(tool.name, tool) } } })
-    return { filesRoot, call: async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal })) }
+    return { filesRoot, botFilesRoot, call: async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal })) }
   }
   const alpha = await toolsFor(a), beta = await toolsFor(b)
   assert.equal((await alpha.call('headbot_list_teams')).teams[0].id, 'beta')
-  await writeFile(path.join(alpha.filesRoot, 'report.txt'), 'team report')
+  await writeFile(path.join(alpha.botFilesRoot, 'report.txt'), 'bot workspace report')
+  await writeFile(path.join(alpha.filesRoot, 'legacy.txt'), 'legacy workspace report')
   await writeFile(path.join(root, 'outside.txt'), 'private')
   await symlink(path.join(root, 'outside.txt'), path.join(alpha.filesRoot, 'escape.txt'))
   await assert.rejects(alpha.call('headbot_send_message', { to: 'beta', files: ['escape.txt'] }), /inside/)
   const sent = await alpha.call('headbot_send_message', { to: 'beta', text: 'please review', files: ['report.txt'] })
+  const legacy = await alpha.call('headbot_send_message', { to: 'beta', text: 'legacy workspace compatibility', files: ['legacy.txt'] })
   const inbox = await beta.call('headbot_receive_messages')
-  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages.length, 2)
   const downloaded = await beta.call('headbot_download_attachment', { messageId: sent.message.messageId, attachmentId: sent.message.attachments[0].id })
-  assert.equal(await readFile(downloaded.path, 'utf8'), 'team report')
+  assert.match(downloaded.path, /beta-bot-files\/inbox\//)
+  assert.equal(await readFile(downloaded.path, 'utf8'), 'bot workspace report')
+  assert.equal(legacy.message.attachments[0].sha256, createHash('sha256').update('legacy workspace report').digest('hex'))
   const reviewed = await fetch(base + '/audit/messages/' + sent.message.messageId + '/attachments/' + sent.message.attachments[0].id, { headers: admin })
-  assert.equal(await reviewed.text(), 'team report')
+  assert.equal(await reviewed.text(), 'bot workspace report')
   const exported = await fetch(base + '/audit/export', { headers: admin }).then(response => response.json())
-  assert.deepEqual(exported.events.map(event => event.type), ['message.sent', 'messages.received', 'attachment.received', 'attachment.reviewed'])
+  assert.deepEqual(exported.events.map(event => event.type), ['message.sent', 'message.sent', 'messages.received', 'attachment.received', 'attachment.reviewed'])
   const deletion = await fetch(base + '/teams/beta', { method: 'DELETE', headers: admin })
   assert.equal(deletion.status, 200)
   assert.equal((await fetch(base + '/comms/v1/inbox', { headers: { Authorization: 'Bearer ' + b.communicationToken } })).status, 401)

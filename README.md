@@ -1,6 +1,6 @@
 # DS Headbot
 
-Current release: **0.2.1**. This patch fixes browser login cookie scoping and startup readiness discovered during Agent-Mac production acceptance.
+Current release: **0.2.2**. Production acceptance fixes cover browser login cookie scoping, startup readiness and asynchronous team creation from the manager page.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 

@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.2] - 2026-10-17
+
+### Fixed
+
+- Capture the creation form before awaiting the API request. Browsers clear `event.currentTarget` after dispatch, which caused a misleading error after a successful instance creation.
+- Added a regression check reproducing the browser event lifetime and verifying the form reset and list refresh.
+
 ## [0.2.1] - 2026-10-17
 
 ### Fixed

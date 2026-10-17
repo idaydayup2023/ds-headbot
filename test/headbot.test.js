@@ -12,6 +12,7 @@ import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
 import { parse } from 'yaml'
 import { startIngress } from '../lib/ingress.js'
+import { runInNewContext } from 'node:vm'
 
 const quiet = { warn() {}, error() {} }
 const apiPath = '/api/ds-headbot/v1'
@@ -272,4 +273,27 @@ test('manager page exposes deletion and audit controls with valid script syntax'
   assert.match(html, /导出完整审计档案/)
   // Compile the browser program without executing DOM effects.
   new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
+})
+
+test('browser creation retains its form after event.currentTarget is cleared', async () => {
+  const elements = new Map(), handlers = new Map()
+  let resets = 0, submitted
+  const element = () => ({style:{}, textContent:'', value:'', addEventListener(){}, append(){}, replaceChildren(){}, querySelector(){return null}})
+  const form = {...element(), elements:{port:{value:'31091'}}, reset(){resets++}, addEventListener(type, handler){handlers.set(type,handler)}}
+  elements.set('#add-form', form)
+  const document = {querySelector(id){if(!elements.has(id))elements.set(id,element());return elements.get(id)},createElement:element}
+  const source = renderManagerPage().match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, setInterval(){},
+    FormData:class {constructor(target){assert.equal(target,form)}get(key){return {id:'browser-test',name:'Browser Test',port:'31091'}[key]}},
+    async fetch(_url, options){if(options.method==='POST')submitted=JSON.parse(options.body);return {status:200,ok:true,async json(){return {teams:[],events:[]}}}},
+  })
+  const event = {currentTarget:form,preventDefault(){}}
+  const pending = handlers.get('submit')(event)
+  event.currentTarget = null
+  await pending
+  assert.equal(resets,1)
+  assert.equal(form.elements.port.value,'3101')
+  assert.equal(submitted.id,'browser-test')
+  assert.equal(elements.get('#error').textContent,'')
 })

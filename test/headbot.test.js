@@ -1,4 +1,3 @@
-
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
@@ -310,7 +309,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.2.7')
+  assert.equal(headbotVersion, '0.2.8')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
@@ -321,7 +320,7 @@ test('release updater detects newer stable versions and launches a detached upda
     currentVersion: '0.2.5', manager, restartCommand: '/bin/launchctl', restartArgs: ['kickstart', '-k', 'gui/501/com.deepseek.dsh'],
     fetchImpl: async url => {
       requestedUrl = url
-      return { ok: true, status: 200, async json() { return { tag_name: 'v0.2.6', draft: false, prerelease: false } } }
+      return { ok: true, status: 200, async json() { return { tag_name: 'v0.2.7', draft: false, prerelease: false } } }
     },
     spawnImpl(command, args, options) {
       spawned = { command, args, options }
@@ -331,26 +330,30 @@ test('release updater detects newer stable versions and launches a detached upda
   const status = await updater.check({ force: true })
   assert.match(requestedUrl, /api\.github\.com\/repos\/idaydayup2023\/ds-headbot\/releases\/latest$/)
   assert.equal(status.currentVersion, '0.2.5')
-  assert.equal(status.latestVersion, '0.2.6')
+  assert.equal(status.latestVersion, '0.2.7')
   assert.equal(status.updateAvailable, true)
-  assert.equal(status.releaseUrl, 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.6')
+  assert.equal(status.releaseUrl, 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.7')
 
   const started = await updater.startUpgrade()
   assert.equal(started.state, 'downloading')
   assert.equal(spawned.command, process.execPath)
-  assert.equal(path.basename(spawned.args[0]), 'release-updater.js'); await access(spawned.args[0]); const workerConfig = JSON.parse(spawned.args[1])
-  assert.equal(workerConfig.tag, 'v0.2.6')
-  assert.equal(workerConfig.targetVersion, '0.2.6')
+  assert.equal(path.basename(spawned.args[0]), 'release-updater.js')
+  await access(spawned.args[0])
+  const workerConfig = JSON.parse(spawned.args[1])
+  assert.equal(workerConfig.tag, 'v0.2.7')
+  assert.equal(workerConfig.targetVersion, '0.2.7')
   assert.equal(workerConfig.parentHome, manager.parentHome)
   assert.equal(spawned.options.detached, true)
-  assert.equal((await updater.readState()).state, 'downloading'); await workerExit(1, null); assert.equal((await updater.readState()).state, 'failed')
+  assert.equal((await updater.readState()).state, 'downloading')
+  await workerExit(1, null)
+  assert.equal((await updater.readState()).state, 'failed')
 })
 
 test('release API checks versions and queues the authenticated upgrade action', async () => {
   const calls = []
   const updater = {
-    async check(options) { calls.push(['check', options]); return { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true } },
-    async startUpgrade() { calls.push(['upgrade']); return { state: 'downloading', targetVersion: '0.2.6' } },
+    async check(options) { calls.push(['check', options]); return { currentVersion: '0.2.5', latestVersion: '0.2.7', updateAvailable: true } },
+    async startUpgrade() { calls.push(['upgrade']); return { state: 'downloading', targetVersion: '0.2.7' } },
   }
   const capture = () => ({
     statusCode: 0, headers: {}, body: '',
@@ -361,13 +364,13 @@ test('release API checks versions and queues the authenticated upgrade action', 
   const getResponse = capture()
   await handleApiRequest({ method: 'GET', url: `${apiPath}/release?refresh=1` }, getResponse, {}, {}, {}, quiet, undefined, updater)
   assert.equal(getResponse.statusCode, 200)
-  assert.deepEqual(JSON.parse(getResponse.body), { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true })
+  assert.deepEqual(JSON.parse(getResponse.body), { currentVersion: '0.2.5', latestVersion: '0.2.7', updateAvailable: true })
   assert.deepEqual(calls[0], ['check', { force: true }])
 
   const postResponse = capture()
   await handleApiRequest({ method: 'POST', url: `${apiPath}/release/upgrade` }, postResponse, {}, {}, {}, quiet, undefined, updater)
   assert.equal(postResponse.statusCode, 202)
-  assert.deepEqual(JSON.parse(postResponse.body), { state: 'downloading', targetVersion: '0.2.6' })
+  assert.deepEqual(JSON.parse(postResponse.body), { state: 'downloading', targetVersion: '0.2.7' })
   assert.deepEqual(calls[1], ['upgrade'])
 })
 
@@ -380,21 +383,26 @@ test('release worker verifies the tagged package, installs it, and retains a rol
   const installedPackage = path.join(profileDir, 'node_modules/ds-headbot')
   const sourceRoot = path.join(root, 'archive-root')
   await mkdir(installedPackage, { recursive: true })
-  await mkdir(sourceRoot, { recursive: true })
+  await mkdir(path.join(sourceRoot, 'lib'), { recursive: true })
   await writeFile(path.join(installedPackage, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.5' }))
   await writeFile(path.join(installedPackage, 'index.js'), 'export {}\n')
-  await writeFile(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.6', scripts: { test: 'node --test' } }))
+  await writeFile(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.7', scripts: { test: 'node --test' } }))
   await writeFile(path.join(sourceRoot, 'index.js'), 'export {}\n')
+  await writeFile(path.join(sourceRoot, 'lib/release-updater.js'), 'export const updater = true\n')
   const sourceTar = path.join(root, 'source.tar.gz')
   execFileSync('/usr/bin/tar', ['-czf', sourceTar, '-C', root, 'archive-root'])
   const sourceBytes = await readFile(sourceTar)
   const dshCalls = []
   const fetchUrls = []
+  const checkedSources = []
   const runCommand = async (command, args, options = {}) => {
     if (command === '/usr/bin/tar') {
       return { stdout: execFileSync(command, args, { cwd: options.cwd }).toString(), stderr: '' }
     }
-    if (args[0] === '--check') return { stdout: '', stderr: '' }
+    if (args[0] === '--check') {
+      checkedSources.push(path.relative(options.cwd, args[1]))
+      return { stdout: '', stderr: '' }
+    }
     if (args[0] === 'pack') {
       const manifest = JSON.parse(await readFile(path.join(options.cwd, 'package.json'), 'utf8'))
       const destination = args[args.indexOf('--pack-destination') + 1]
@@ -405,7 +413,7 @@ test('release worker verifies the tagged package, installs it, and retains a rol
     if (args.includes('add')) {
       dshCalls.push(args)
       const packagePath = args.at(-1)
-      const nextVersion = packagePath.endsWith('ds-headbot-0.2.6.tgz') ? '0.2.6' : '0.2.5'
+      const nextVersion = packagePath.endsWith('ds-headbot-0.2.7.tgz') ? '0.2.7' : '0.2.5'
       await writeFile(path.join(installedPackage, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: nextVersion }))
       return { stdout: '', stderr: '' }
     }
@@ -413,7 +421,7 @@ test('release worker verifies the tagged package, installs it, and retains a rol
     throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
   }
   const result = await performHeadbotUpdate({
-    targetVersion: '0.2.6', tag: 'v0.2.6', parentHome, managerRoot, profile: 'web', dshCommand: 'dsh', pnpmCommand: 'pnpm',
+    targetVersion: '0.2.7', tag: 'v0.2.7', parentHome, managerRoot, profile: 'web', dshCommand: 'dsh', pnpmCommand: 'pnpm',
     restart: { command: '/usr/bin/true', args: [] }, controllerPath: 'dsh', parentPort: 3080,
   }, {
     fetchImpl: async url => {
@@ -424,12 +432,58 @@ test('release worker verifies the tagged package, installs it, and retains a rol
     runCommand,
   })
   assert.equal(result.state, 'completed')
-  assert.equal(await readFile(path.join(installedPackage, 'package.json'), 'utf8').then(value => JSON.parse(value).version), '0.2.6')
+  assert.equal(await readFile(path.join(installedPackage, 'package.json'), 'utf8').then(value => JSON.parse(value).version), '0.2.7')
   assert.ok(await readFile(result.rollbackPackage))
   assert.ok(fetchUrls.includes('http://127.0.0.1:3080/api/ds-headbot/v1/release'))
   assert.ok(!fetchUrls.includes('http://127.0.0.1:3080/dsh/api/ds-headbot/v1/release'))
+  assert.ok(checkedSources.includes('index.js'))
+  assert.ok(checkedSources.includes('lib/release-updater.js'))
   assert.equal(dshCalls.length, 1)
   assert.equal((await readFile(path.join(managerRoot, 'headbot-update-state.json'), 'utf8').then(JSON.parse)).state, 'completed')
+})
+
+test('release worker rejects invalid syntax in a nested module before installation', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-syntax-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const parentHome = path.join(root, 'dsh')
+  const managerRoot = path.join(parentHome, 'headbot')
+  const installedPackage = path.join(parentHome, 'profiles/web/node_modules/ds-headbot')
+  const sourceRoot = path.join(root, 'archive-root')
+  await mkdir(installedPackage, { recursive: true })
+  await mkdir(path.join(sourceRoot, 'lib'), { recursive: true })
+  await writeFile(path.join(installedPackage, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.7' }))
+  await writeFile(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: 'ds-headbot', version: '0.2.8', type: 'module' }))
+  await writeFile(path.join(sourceRoot, 'index.js'), 'export {}\n')
+  await writeFile(path.join(sourceRoot, 'lib/release-updater.js'), 'export const = ;\n')
+  const sourceTar = path.join(root, 'source.tar.gz')
+  execFileSync('/usr/bin/tar', ['-czf', sourceTar, '-C', root, 'archive-root'])
+  const sourceBytes = await readFile(sourceTar)
+  let installCalls = 0
+  const runCommand = async (command, args, options = {}) => {
+    if (command === '/usr/bin/tar') {
+      return { stdout: execFileSync(command, args, { cwd: options.cwd }).toString(), stderr: '' }
+    }
+    if (args[0] === '--check') {
+      try {
+        const stdout = execFileSync(command, args, { cwd: options.cwd }).toString()
+        return { stdout, stderr: '' }
+      } catch (error) {
+        throw new Error(error.stderr?.toString() || error.message)
+      }
+    }
+    if (args.includes('add')) installCalls++
+    throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
+  }
+  await assert.rejects(performHeadbotUpdate({
+    targetVersion: '0.2.8', tag: 'v0.2.8', parentHome, managerRoot, profile: 'web', dshCommand: 'dsh', pnpmCommand: 'pnpm',
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, async arrayBuffer() { return sourceBytes } }),
+    runCommand,
+  }), /Unexpected token|SyntaxError/)
+  assert.equal(installCalls, 0)
+  const state = JSON.parse(await readFile(path.join(managerRoot, 'headbot-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'failed')
+  assert.equal(state.targetVersion, '0.2.8')
 })
 
 test('browser creation retains its form after event.currentTarget is cleared', async () => {
@@ -485,7 +539,7 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
         return { status: 202, ok: true, async json() { return { state: updateState } } }
       }
       const data = url.includes('/release')
-        ? { currentVersion: '0.2.5', latestVersion: '0.2.6', updateAvailable: true, releaseUrl: 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.6', state: updateState, message: '' }
+        ? { currentVersion: '0.2.5', latestVersion: '0.2.7', updateAvailable: true, releaseUrl: 'https://github.com/idaydayup2023/ds-headbot/releases/tag/v0.2.7', state: updateState, message: '' }
         : url.includes('/audit') ? { events: [], nextBefore: null } : { teams: [] }
       return { status: 200, ok: true, async json() { return data } }
     },
@@ -494,7 +548,7 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   await new Promise(resolve => setImmediate(resolve))
   const upgradeButton = elements.get('#upgrade-headbot')
   assert.equal(upgradeButton.disabled, false)
-  assert.equal(upgradeButton.textContent, '升级到 v0.2.6')
+  assert.equal(upgradeButton.textContent, '升级到 v0.2.7')
   assert.equal(upgradeButton.classList.contains('update-ready'), true)
 
   await handlers.get('#upgrade-headbot:click')({ currentTarget: upgradeButton })

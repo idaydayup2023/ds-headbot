@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.2.8] - 2026-10-17
+
+### Fixed
+
+- Correct updater event-handler syntax so the plugin loads in DSH.
+- Validate every packaged JavaScript and module file before installation, preventing malformed release code from replacing a working manager.
+
 ## [0.2.7] - 2026-10-17
 
 ### Fixed

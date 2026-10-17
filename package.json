@@ -1,0 +1,41 @@
+{
+  "name": "ds-headbot",
+  "version": "0.1.0",
+  "description": "DSH bundle plugin and upper-level manager for multiple isolated DSH + ds-bot instances.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "ds-bot",
+    "multi-team",
+    "manager"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "index.js",
+    "cordis.patch.yml",
+    "lib/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "deploy/Caddyfile"
+  ],
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -35,8 +35,8 @@ The package declares its DSH bundle through `dsh.bundle.patch` in `package.json`
 Set the canonical public host and any additional browser-facing host aliases in the environment used to launch DSH and Caddy. `publicHost` is used for the DSH-advertised URL; `publicHosts` adds the other accepted authorities. For example:
 
 ```sh
-export HEADBOT_PUBLIC_HOST=192.168.1.5
-export HEADBOT_PUBLIC_HOSTS=172.19.60.118
+export HEADBOT_PUBLIC_HOST=agent.lan
+export HEADBOT_PUBLIC_HOSTS=agent.example.net
 ```
 
 If DSH runs as a macOS LaunchAgent, add these variables to that launcher's environment. The values must match the `publicHost` and `publicHosts` options in the `ds-headbot` bundle configuration and the Caddy host routes. The parent DSH service environment must also include `dsh` and `pnpm` on `PATH`, or set `dshCommand` to the absolute DSH executable path.
@@ -50,7 +50,7 @@ dsh --profile web \
   --no-open \
   --public-url "https://$HEADBOT_PUBLIC_HOST/dsh/" \
   --trusted-host "$HEADBOT_PUBLIC_HOST" \
-  --trusted-host 172.19.60.118
+  --trusted-host agent.example.net
 ```
 
 Repeat `--trusted-host` for every `publicHosts` alias. DSH treats `--public-url` as one advertised URL; each alias is admitted separately by the repeatable `--trusted-host` option. Headbot passes all configured authorities to each managed DSH process and rewrites absolute redirects to retain the browser's current authority.
@@ -128,9 +128,9 @@ If changing the bundle's `config` in a Cordis patch, restate every field because
 ```yaml
 - id: ds-headbot
   config:
-    publicHost: 192.168.1.5
+    publicHost: agent.lan
     publicHosts:
-      - 172.19.60.118
+      - agent.example.net
     httpsPort: 10443
     ingressPort: 3180
     controllerPath: dsh

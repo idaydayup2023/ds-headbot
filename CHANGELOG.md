@@ -4,6 +4,18 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.3] - 2026-10-18
+
+### Fixed
+
+- Keep instance **打开** links on the browser's current hostname and HTTPS port instead of sending LAN users to a fixed canonical address.
+- Trust every configured public host alias in managed DSH instances and rewrite absolute redirects to the authority used by the browser, including WebSocket handshakes.
+- Show the current browser origin in the manager and generate Caddy routes for all configured hosts and an optional HTTPS port.
+
+### Added
+
+- Configure additional accepted addresses with `publicHosts` or `HEADBOT_PUBLIC_HOSTS`; `publicHost` remains the canonical advertised address.
+
 ## [0.3.2] - 2026-10-17
 
 ### Fixed

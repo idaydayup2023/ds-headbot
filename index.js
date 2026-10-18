@@ -130,6 +130,7 @@ export async function handleApiRequest(req, res, manager, communications, runtim
       if (method === 'GET' && route === '/comms/v1/teams') return json(res, 200, await communications.directory(actor))
       if (method === 'POST' && route === '/comms/v1/messages') return json(res, 201, await communications.send(actor, await readJson(req, communications.bodyLimit)))
       if (method === 'GET' && route === '/comms/v1/inbox') return json(res, 200, await communications.inbox(actor, url.searchParams.get('after') ?? 0, url.searchParams.get('limit') ?? 20))
+      if (method === 'POST' && route === '/comms/v1/status') return json(res, 200, await manager.reportTeamStatus(actor, await readJson(req, 4096)))
       const download = route.match(/^\/comms\/v1\/messages\/([a-f0-9-]{36})\/attachments\/([a-f0-9-]{36})$/)
       if (method === 'GET' && download) {
         const { attachment, bytes } = await communications.attachment(actor, download[1], download[2])

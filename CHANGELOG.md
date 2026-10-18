@@ -4,6 +4,14 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.4] - 2026-10-18
+
+### Fixed
+
+- Resume the selected persisted DSH Agent session when a Feishu-enabled team starts, keeping the existing Agent available after host restarts without sending a model prompt.
+- Report live Feishu WebSocket and selected Agent availability from each team process to the authenticated manager endpoint; show the two states separately and update them when either changes.
+- Retry Agent session restoration with bounded backoff and show restoration failures instead of leaving Feishu and Agent status in an unconfirmed state.
+
 ## [0.3.3] - 2026-10-18
 
 ### Fixed

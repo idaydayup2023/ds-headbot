@@ -21,12 +21,15 @@ flowchart LR
 
 子进程的 `HEADBOT_BROKER_URL` 为 `http://127.0.0.1:<控制器端口>/api/ds-headbot/v1/comms/v1`。下表路径相对此地址；所有请求使用 `Authorization: Bearer <团队凭据>`，JSON 使用 UTF-8。服务端不返回跨域授权头，插件客户端不跟随重定向。
 
+`POST /status` 是实例运行状态上报接口，使用本次进程启动时分配的 generation 值拒绝旧进程的迟到上报。请求仅包含 `generation`、`feishuStatus` 和 `agentStatus`；服务端只接受飞书连接枚举和 Agent 会话状态，不接收或记录消息正文。它不属于团队消息审计流。
+
 | 方法 / 路径 | 语义 |
 | --- | --- |
 | `GET /teams` | 返回 `protocol`、`self`、容量限制和其他团队的 `id/name/status` |
 | `POST /messages` | 审计并发送一条消息，返回 `message` 与 `duplicate` |
 | `GET /inbox?after=0&limit=20` | 按审计序号升序读取本实例收件箱；返回 `messages` 与 `nextCursor` |
 | `GET /messages/<messageId>/attachments/<attachmentId>` | 仅收件实例可下载；返回附件元数据与 `contentBase64` |
+| `POST /status` | 上报本进程的 Feishu 长连接状态和 Agent 会话状态；不传递消息内容 |
 
 消息请求示例：
 

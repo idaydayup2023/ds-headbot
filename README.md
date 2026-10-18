@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current release: **0.3.2**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
+Current release: **0.3.3**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -11,16 +11,16 @@ Each additional team receives its own DSH home, `web` profile state, ds-bot conf
 
 ## Access model
 
-All instances are available under one LAN hostname or IP through HTTPS path routing:
+All instances are available through HTTPS path routing under one or more approved hostnames or IP addresses. The same routes work from a LAN address and a firewall-forwarded address; the manager's **打开** button keeps the address used to open the manager:
 
 | URL | Purpose |
 | --- | --- |
-| `http://<host>/` | Redirects to HTTPS and opens the Headbot manager |
-| `https://<host>/dsh/` | Controller DSH Web UI |
-| `https://<host>/dsh/manage/` | DS Headbot team manager |
-| `https://<host>/teams/<team-id>/` | One team's DSH + ds-bot instance |
+| `http://<host>[:port]/` | Redirects to HTTPS and opens the Headbot manager |
+| `https://<host>[:port]/dsh/` | Controller DSH Web UI |
+| `https://<host>[:port]/dsh/manage/` | DS Headbot team manager |
+| `https://<host>[:port]/teams/<team-id>/` | One team's DSH + ds-bot instance |
 
-Port 80 redirects to HTTPS on port 443. Caddy terminates TLS and forwards to Headbot's loopback ingress on port 3180. Headbot routes requests to the controller and team ports, strips each path prefix, preserves the browser `Host`, forwards WebSocket upgrades, and scopes each DSH cookie to its path.
+Port 80 redirects to the configured HTTPS port (443 by default). Caddy terminates TLS and forwards to Headbot's loopback ingress on port 3180. Headbot routes requests to the controller and team ports, strips each path prefix, preserves the browser `Host`, forwards WebSocket upgrades, and scopes each DSH cookie to its path.
 
 ## Install the DSH plugin
 
@@ -32,13 +32,14 @@ dsh plugin --profile web add github:idaydayup2023/ds-headbot
 
 The package declares its DSH bundle through `dsh.bundle.patch` in `package.json`; DSH applies this patch to register the manager plugin in the Web profile.
 
-Set the public host in the environment used to launch DSH and Caddy. For this LAN setup, that may be the Agent Mac's reserved address, such as `192.168.1.5`:
+Set the canonical public host and any additional browser-facing host aliases in the environment used to launch DSH and Caddy. `publicHost` is used for the DSH-advertised URL; `publicHosts` adds the other accepted authorities. For example:
 
 ```sh
 export HEADBOT_PUBLIC_HOST=192.168.1.5
+export HEADBOT_PUBLIC_HOSTS=172.19.60.118
 ```
 
-If DSH runs as a macOS LaunchAgent, add the variable to that launcher's environment. The value must match the `publicHost` option in the `ds-headbot` bundle configuration and the Caddy service environment. The parent DSH service environment must also include `dsh` and `pnpm` on `PATH`, or set `dshCommand` to the absolute DSH executable path.
+If DSH runs as a macOS LaunchAgent, add these variables to that launcher's environment. The values must match the `publicHost` and `publicHosts` options in the `ds-headbot` bundle configuration and the Caddy host routes. The parent DSH service environment must also include `dsh` and `pnpm` on `PATH`, or set `dshCommand` to the absolute DSH executable path.
 
 Start the controller DSH on loopback with its public path and trusted LAN authority:
 
@@ -48,18 +49,21 @@ dsh --profile web \
   --port 3080 \
   --no-open \
   --public-url "https://$HEADBOT_PUBLIC_HOST/dsh/" \
-  --trusted-host "$HEADBOT_PUBLIC_HOST"
+  --trusted-host "$HEADBOT_PUBLIC_HOST" \
+  --trusted-host 172.19.60.118
 ```
+
+Repeat `--trusted-host` for every `publicHosts` alias. DSH treats `--public-url` as one advertised URL; each alias is admitted separately by the repeatable `--trusted-host` option. Headbot passes all configured authorities to each managed DSH process and rewrites absolute redirects to retain the browser's current authority.
 
 The controller's printed token URL is the initial sign-in link. Open it once in a browser; after that, use `https://<host>/` or `/dsh/manage/`. The manager API uses DSH's Connection admission check, so unauthenticated or cross-origin state-changing requests are rejected. The static manager page itself contains no team data.
 
 ## Enable the LAN HTTPS entry
 
-Use [`deploy/Caddyfile`](deploy/Caddyfile) as the Caddy configuration for the Agent Mac. Caddy owns ports 80 and 443; DSH and Headbot bind to loopback. Run Caddy as a service that can bind those ports and set `HEADBOT_PUBLIC_HOST` in that service's environment.
+Use the Caddy configuration downloaded from the manager when serving multiple addresses or a non-default HTTPS port; it contains a route and certificate site for every configured host. [`deploy/Caddyfile`](deploy/Caddyfile) is a single-host starter template. Caddy owns the public ports; DSH and Headbot bind to loopback.
 
 This template uses Caddy's internal CA, which is suitable for a private LAN but is not trusted by client devices automatically. Trust the CA on the Agent Mac and install the generated root certificate on each browser device that should open Headbot. [Caddy's documentation](https://caddyserver.com/docs/caddyfile/directives/tls) explains the root certificate and `caddy trust` setup. Alternatively, replace `tls internal` with a certificate/key pair trusted by those devices.
 
-The manager page can download the generated Caddyfile. The plugin does not overwrite the system Caddy configuration or restart a system service.
+The manager page can download the generated Caddyfile using `publicHost`, `publicHosts`, and optional `httpsPort` configuration. The plugin does not overwrite the system Caddy configuration or restart a system service.
 
 ## Add and manage instances
 
@@ -125,6 +129,9 @@ If changing the bundle's `config` in a Cordis patch, restate every field because
 - id: ds-headbot
   config:
     publicHost: 192.168.1.5
+    publicHosts:
+      - 172.19.60.118
+    httpsPort: 10443
     ingressPort: 3180
     controllerPath: dsh
     teamsPath: teams

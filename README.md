@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current release: **0.3.4**. The manager shows the installed DS Headbot version, checks GitHub for the latest stable release, and enables a one-click upgrade when one is available. It also lets you edit team names and ports, update every managed DS Bot in sequence, and checks for the latest DS Bot release whenever an existing team starts.
+Current release: **0.3.5**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -78,7 +78,7 @@ The copied model settings and credentials are a one-time starting point. After p
 
 ### Protected default instance
 
-The first card is the controller already running in the DSH Web profile, usually on port 3080. Its display name is stored in `<DSH_HOME>/headbot/controller.json`; it is not a child entry in `teams.json`. Headbot fixes its port to the controller's actual DSH Web port and forces autostart on. The page hides stop, port-edit, and delete controls, and the management API rejects those operations as well. The card still offers name editing, restart, DS Bot update, and Feishu settings.
+The first card is the controller already running in the DSH Web profile, usually on port 3080. Its display name is stored in `<DSH_HOME>/headbot/controller.json`; it is not a child entry in `teams.json`. Headbot fixes its port to the controller's actual DSH Web port and forces autostart on. The page hides stop, port-edit, and delete controls, and the management API rejects those operations as well. The card still offers name editing, restart, and Feishu settings. DS Bot updates are managed from the shared DS Bot version card.
 
 Restarting the default instance restarts the DSH LaunchAgent (`com.deepseek.dsh` by default), so the management page and its child processes disconnect briefly. When DSH starts again, Headbot resumes and starts child teams whose own autostart option is enabled. Custom service managers should set `restartCommand` and `restartArgs` as described below.
 
@@ -94,7 +94,7 @@ App Secrets are stored in `<DSH_HOME>/headbot/feishu-secrets.json` with owner-on
 
 See the [Feishu bridge documentation](https://github.com/zyfgood/dsh-feishu-bot) and the [Feishu bot overview](https://open.feishu.cn/document/client-docs/bot-v3/bot-overview) for app setup details.
 
-Use the manager to start, stop, restart, or update ds-bot for a team. **全部更新 DS Bot** updates the instances one by one and restarts each after its update. Starting or restarting an existing team also runs `dsh plugin --profile web update --latest ds-bot` against that team's isolated DSH home before launching it. If the registry is unavailable, Headbot reports the update error and starts the already installed version so the team remains available. Teams with auto-start enabled resume when the controller DSH starts and check for the latest package as they start.
+Use the manager to start, stop, or restart a team. The DS Bot version card checks the registry and offers one **全部更新到 vX.Y.Z** button that updates each instance sequentially, restarting it after the update; the protected default instance is updated last because it restarts the controller. Starting or restarting a team uses its currently installed DS Bot version and never performs an implicit update. DSH version checks use the `next` npm dist-tag and its manual upgrade button invokes the installation's backup-and-rollback update script. Teams with auto-start enabled resume when the controller DSH starts; version checks never trigger upgrades.
 
 The **DS Headbot 版本** card checks the latest stable release from GitHub. When a newer version is available, **升级到 vX.Y.Z** becomes active. The updater downloads the tagged repository source, verifies that its package version matches the release tag, packs it locally, updates the controller's `web` profile, and keeps the prior package as a rollback artifact under the DSH user's Headbot data directory. On macOS it restarts the configured LaunchAgent (`com.deepseek.dsh` by default) so the new plugin is loaded. Other service managers can set `restartCommand` and `restartArgs` in the `ds-headbot` plugin config. Team workspaces and audit data remain in place. See [self-update and rollback](docs/self-update.md) for details.
 

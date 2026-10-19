@@ -4,6 +4,13 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.6] - 2026-10-20
+
+### Changed
+
+- Arrange the version cards in three columns in the order DS Headbot, DS Bot, and DeepSeek Harness.
+- Show one shared current DS Bot version instead of a per-instance version list, and remove the fixed default-instance note from its row.
+
 ## [0.3.5] - 2026-10-20
 
 ### Added

@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.7] - 2026-10-20
+
+### Changed
+
+- Remove routine up-to-date and completed messages below the version controls, use the concise **全部更新** button label, and remove the management-page subtitle.
+
 ## [0.3.6] - 2026-10-20
 
 ### Changed

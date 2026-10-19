@@ -4,6 +4,17 @@ All notable changes to DS Headbot are recorded here.
 
 ## Unreleased
 
+## [0.3.5] - 2026-10-20
+
+### Added
+
+- Show current and latest DSH and DS Bot versions in the management page, with explicit manual update controls.
+- Add one DS Bot update action that upgrades every managed instance sequentially; remove per-instance update buttons.
+
+### Fixed
+
+- Stop updating DS Bot automatically when instances start or restart.
+
 ## [0.3.4] - 2026-10-18
 
 ### Fixed

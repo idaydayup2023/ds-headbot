@@ -2,7 +2,17 @@
 
 All notable changes to DS Headbot are recorded here.
 
-## Unreleased
+## [0.4.0] - 2026-10-20
+
+### Added
+
+- Add a model directory for OpenAI-compatible local and hosted endpoints, including optional API keys.
+- Allow each instance to assign one model to all of its Bots and apply the choice to their persisted DSH Sessions when that instance restarts.
+- Store model credentials in an owner-only file and keep API key values out of the management API, rendered list, and captured DSH logs.
+
+### Changed
+
+- Seed the model directory from the existing controller default model and let new teams inherit the selected default model.
 
 ## [0.3.7] - 2026-10-20
 

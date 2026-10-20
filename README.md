@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current release: **0.3.5**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+Current release: **0.4.0**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -74,11 +74,17 @@ Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifie
 3. installs `ds-bot` and any configured `teamPlugins` into that team's DSH `web` profile; and
 4. launches a separate DSH process on `127.0.0.1:<team-port>` with the team's public URL and trusted host.
 
-The copied model settings and credentials are a one-time starting point. After provisioning, each team's files can be changed independently in its own DSH home. Sessions, ds-bot configuration, installed profile packages, logs, and later edits stay in that team's directory. Data remains after stopping or removing this bundle. Nothing is written into a project checkout.
+The copied model settings are an initial starting point. The **模型目录** card imports the controller's current default model (including an existing local endpoint such as `http://192.168.1.9:8888/v1`) and lets an administrator add OpenAI-compatible endpoints such as OpenRouter. Each model entry has a unique DSH provider ID, endpoint URL, model ID, display name, and optional API key. OpenRouter uses `https://openrouter.ai/api/v1`; see the [OpenRouter developer guide](https://openrouter.ai/developers) for its OpenAI-compatible API details.
+
+Use **编辑** on an instance to assign a model to every Bot in that instance. Saving the choice updates the instance's DSH default and each existing Bot's model reference, then restarts that DSH process so ds-bot applies the selection to each Bot's persisted Session. A running child team restarts by itself; a stopped team uses the new model the next time it starts. Changing the protected default instance's model briefly disconnects the manager and restarts auto-start teams. On macOS, Headbot stops the controller LaunchAgent, waits for DS Bot to release its state lock, updates the Bot model references, and bootstraps the LaunchAgent again; this prevents the running DS Bot process from overwriting the change. The default instance must use the LaunchAgent named by `launchdLabel` (default `com.deepseek.dsh`); set `launchdPlist` if its plist is outside `~/Library/LaunchAgents/<label>.plist`. New teams inherit the default instance's model choice.
+
+Model API keys are stored separately in `<DSH_HOME>/headbot/model-secrets.json` with owner-only permissions and are never returned by the management API. A child process receives only the selected model's key. For the default instance, Headbot keeps the selected key in a marked block in `<DSH_HOME>/.env`; its DSH launcher must source this file before starting DSH. Headbot preserves other `.env` lines and redacts model keys from captured DSH errors and logs. Teams still run under the same macOS account, so this is credential separation between instances rather than an operating-system security boundary.
+
+Sessions, ds-bot configuration, installed profile packages, logs, and later edits stay in each team's directory. Data remains after stopping or removing this bundle. Nothing is written into a project checkout.
 
 ### Protected default instance
 
-The first card is the controller already running in the DSH Web profile, usually on port 3080. Its display name is stored in `<DSH_HOME>/headbot/controller.json`; it is not a child entry in `teams.json`. Headbot fixes its port to the controller's actual DSH Web port and forces autostart on. The page hides stop, port-edit, and delete controls, and the management API rejects those operations as well. The card still offers name editing, restart, and Feishu settings. DS Bot updates are managed from the shared DS Bot version card.
+The first card is the controller already running in the DSH Web profile, usually on port 3080. Its display name and model assignment are stored in `<DSH_HOME>/headbot/controller.json`; it is not a child entry in `teams.json`. Headbot fixes its port to the controller's actual DSH Web port and forces autostart on. The page hides stop, port-edit, and delete controls, and the management API rejects those operations as well. The card still offers name and model editing, restart, and Feishu settings. DS Bot updates are managed from the shared DS Bot version card.
 
 Restarting the default instance restarts the DSH LaunchAgent (`com.deepseek.dsh` by default), so the management page and its child processes disconnect briefly. When DSH starts again, Headbot resumes and starts child teams whose own autostart option is enabled. Custom service managers should set `restartCommand` and `restartArgs` as described below.
 

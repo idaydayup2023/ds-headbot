@@ -162,6 +162,21 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     if (method === 'GET' && route === '/teams') {
       return json(res, 200, { teams: await manager.listInstances() })
     }
+    if (method === 'GET' && route === '/models') {
+      return json(res, 200, { models: await manager.listModels() })
+    }
+    if (method === 'POST' && route === '/models') {
+      const model = await manager.createModel(await readJson(req))
+      return json(res, 201, { model })
+    }
+    const modelRoute = route.match(/^\/models\/([a-z0-9][a-z0-9-]{0,47})$/)
+    if (method === 'PATCH' && modelRoute) {
+      const model = await manager.updateModel(modelRoute[1], await readJson(req))
+      return json(res, 200, { model })
+    }
+    if (method === 'DELETE' && modelRoute) {
+      return json(res, 200, { deleted: await manager.deleteModel(modelRoute[1]) })
+    }
     const teamBots = route.match(/^\/teams\/([a-z0-9][a-z0-9-]{0,47})\/bots$/)
     if (method === 'GET' && teamBots) {
       return json(res, 200, { bots: await manager.getTeamBots(teamBots[1]) })

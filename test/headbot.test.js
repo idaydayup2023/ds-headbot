@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { execFileSync } from 'node:child_process'
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -67,7 +67,7 @@ test('runtime create/edit/start/stop/restart/delete archives data and revokes id
   assert.equal(running.status, 'running', running.message)
   await manager.stopTeam('alpha')
   await manager.startTeam('alpha')
-  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot/)
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web add ds-bot/)
   await manager.stopTeam('alpha')
   assert.equal((await manager.getTeam('alpha')).status, 'stopped')
   await manager.restartTeam('alpha')
@@ -157,6 +157,46 @@ test('new teams inherit profile model endpoints once without nesting the control
   await manager.provisionHome(team)
   assert.equal(parse(await readFile(patch, 'utf8'))[0].config.model, 'independently-edited')
   assert.throws(() => new HeadbotManager({ teamPlugins: ['--unsafe'] }, { parentPort: 3080 }), /teamPlugins/)
+})
+
+test('Feishu bridge is packed for isolated profiles instead of treated as an installed source link', async t => {
+  const { manager } = await fixture(t)
+  const team = await add(manager, 'feishu')
+  const profileHome = path.join(manager.root, 'teams/feishu/home')
+  const profileModules = path.join(profileHome, 'profiles/web/node_modules')
+  const installedPath = path.join(profileModules, 'ds-headbot-feishu')
+  await mkdir(profileModules, { recursive: true })
+  await symlink(manager.feishuPluginPath(), installedPath, 'dir')
+  assert.equal(await manager.isTeamFeishuInstalled(team), false, 'a link to the controller package cannot provide isolated peer dependencies')
+
+  const archive = await manager.packFeishuPlugin()
+  assert.match(archive, /packages\/ds-headbot-feishu-0\.1\.1-[a-f0-9]{16}\.tgz$/)
+  const members = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).split('\n')
+  assert.ok(members.includes('package/lib/index.js'))
+  assert.ok(members.includes('package/package.json'))
+  assert.equal(members.some(member => member.includes('node_modules')), false)
+
+  const packagedDirectory = path.join(profileModules, '.pnpm/ds-headbot-feishu@0.1.1/node_modules/ds-headbot-feishu')
+  await mkdir(packagedDirectory, { recursive: true })
+  await writeFile(path.join(packagedDirectory, 'package.json'), await readFile(path.join(manager.feishuPluginPath(), 'package.json')))
+  await unlink(installedPath)
+  await symlink(packagedDirectory, installedPath, 'dir')
+  assert.equal(await manager.isTeamFeishuInstalled(team), true, 'a package installed inside the team profile is accepted')
+})
+
+test('enabled Headbot Feishu config explicitly overrides the package disabled default', async t => {
+  const { manager } = await fixture(t)
+  const team = await add(manager, 'feishu-config')
+  team.feishu = { enabled: true, appId: 'cli_test', botId: 'agent-test' }
+  manager.resolveFeishuTargetSession = async () => 'session-test'
+
+  await manager.provisionHome(team)
+
+  const patch = parse(await readFile(path.join(manager.root, 'teams/feishu-config/communications.patch.yml'), 'utf8'))
+  const plugin = patch.find(entry => entry.id === 'ds-headbot-feishu')
+  assert.ok(plugin)
+  assert.equal(plugin.disabled, false)
+  assert.equal(plugin.config.agentId, 'session-test')
 })
 
 test('audit failures block send, receive and file delivery; tampering is detected', async t => {
@@ -286,7 +326,7 @@ test('manager page shows the version updater and places teams before team creati
   const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh', version: '0.2.5' })
   assert.match(html, /创建团队/)
   assert.doesNotMatch(html, /添加团队副本/)
-  assert.match(html, /全部更新 DS Bot/)
+  assert.match(html, /dsBot\.latestVersion\?'全部更新'/)
   assert.match(html, /当前版本：v0\.2\.5/)
   assert.match(html, /id="latest-version"/)
   assert.match(html, /id="upgrade-headbot"/)
@@ -309,7 +349,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.3.5')
+  assert.equal(headbotVersion, '0.4.1')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
@@ -495,7 +535,7 @@ test('browser creation retains its form after event.currentTarget is cleared', a
   const document = {querySelector(id){if(!elements.has(id))elements.set(id,element());return elements.get(id)},createElement:element}
   const source = renderManagerPage().match(/<script>([\s\S]*?)<\/script>/)[1]
   runInNewContext(source, {
-    document, setInterval(){},
+    document, window:{location:{origin:'https://localhost'}}, setInterval(){},
     FormData:class {constructor(target){assert.equal(target,form)}get(key){return {id:'browser-test',name:'Browser Test',port:'31091'}[key]}},
     async fetch(_url, options){if(options.method==='POST')submitted=JSON.parse(options.body);return {status:200,ok:true,async json(){return {teams:[],events:[]}}}},
   })
@@ -530,7 +570,7 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   }
   const source = renderManagerPage({ version: '0.2.5' }).match(/<script>([\s\S]*?)<\/script>/)[1]
   runInNewContext(source, {
-    document, setInterval() {}, confirm() { return true },
+    document, window:{location:{origin:'https://localhost'}}, setInterval() {}, confirm() { return true },
     FormData: class { constructor() {} get() { return '' } },
     async fetch(url, options = {}) {
       if (url.endsWith('/release/upgrade')) {

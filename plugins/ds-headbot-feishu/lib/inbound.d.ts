@@ -1,0 +1,175 @@
+/**
+ * 入站消息处理：把飞书用户发来的消息转成机器人的回复。
+ *
+ * 三种模式（config.mode）：
+ * - `echo`  回显原文，用于验证绑定是否打通；
+ * - `llm`   用 `ctx.llm` 直接生成回复（自包含、无需 agent 会话）；
+ * - `agent` 把消息转交给 DSH agent 处理，再把该 agent 新产生的 assistant
+ *           文本回发到飞书。
+ *
+ * agent 模式的会话策略（每个飞书会话独立维护）：
+ * - 未指定 `agentId`：自动创建专属 DSH agent（首条消息创建、后续复用）；
+ * - 指定 `agentId`：复用该会话；
+ * - 可用飞书命令管理会话（config.commands，默认开启）：
+ *   `/new` `/reset`      清空当前会话上下文（销毁专属 agent，下条消息新建；
+ *                        v0.6.9 起回复附新会话参数预览：模型/权限/预设/目录）
+ *   `/model`            查看/切换本飞书会话的模型（v0.7.0；覆盖 > 插件配置
+ *                        > GUI 默认；活跃会话自下一 step 生效；/model reset 恢复）
+ *   `/thinking`         查看/切换本飞书会话的思考模式（v0.9.0；档位来自
+ *                        模型能力，/thinking list 列出；覆盖 > 插件配置
+ *                        reasoningEffort > GUI 默认模型的档位 > 模型默认；
+ *                        活跃会话自下一 step 生效；/thinking reset 恢复）
+ *   `/sessions`          列出当前活跃的 DSH agent 会话
+ *   `/attach <会话id>`   接手 GUI 中某个既有会话（此后该飞书会话驱动它）
+ *   `/detach`            解除接手，回到自动创建模式
+ *
+ * @module dsh-feishu-bot/inbound
+ */
+import type { Context } from '@deepseek-ai/cordis';
+import type { MarkdownStreamController, SendResult } from '@larksuiteoapi/node-sdk';
+import { type ContextFormed } from '@deepseek-ai/dsh-llm';
+import { type Agent, type AgentHandle } from '@deepseek-ai/dsh-agent';
+import type { FeishuService } from './service.ts';
+import type { Config } from './index.ts';
+import { type PendingQuestionState } from './questions.ts';
+import type { ChatSessionStore, ModelOverrideStore } from './persistence.ts';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'ds-headbot-feishu': {
+            kind: 'ds-headbot-feishu';
+        } & ContextFormed;
+    }
+}
+/** 一个进行中的流式转发会话（按 agentId 索引）。 */
+interface ChatStream {
+    /** 归属的飞书 chat_id。 */
+    chatId: string;
+    /** 原始飞书消息 id；Headbot 模式下所有输出都引用该消息。 */
+    replyToMessageId?: string;
+    /** 归属的 agent id。 */
+    agentId: string;
+    /** 当前正在编辑的飞书消息 id（旧链路使用；原生链路结束时回填）。 */
+    messageId?: string;
+    /** 原生卡片流式 run() 的 promise（进行中）；undefined = 未启动。 */
+    streamRun?: Promise<SendResult>;
+    /** 原生流式控制器（producer 启动后可用；undefined = 未启动/已降级）。 */
+    streamController?: MarkdownStreamController;
+    /** 结束信号：relayEnd/熔断时 resolve，producer 返回后 SDK 收尾卡片。 */
+    streamDone?: {
+        promise: Promise<void>;
+        resolve: () => void;
+    };
+    /** 原生流式已失败（启动或更新失败）→ 走旧降级链路。 */
+    streamFailed?: boolean;
+    /** 原生流式已钉头收尾（内容超单卡上限/超时）→ 不再重启，后续走旧链路。 */
+    nativeDone?: boolean;
+    /** 原生流式启动时间戳（超时硬化用）。 */
+    streamStartedAt?: number;
+    /** 累积文本。 */
+    text: string;
+    /** 待刷新的定时器。 */
+    timer?: ReturnType<typeof setTimeout>;
+    /** 是否在下一个工具调用时收尾（任务执行中回应问题的路径）。 */
+    stopOnToolCall: boolean;
+    /** 是否以 markdown 卡片模式流式（旧链路：首条为卡片，后续 updateCard 更新）。 */
+    cardMode: boolean;
+    /** 复读熔断已触发：丢弃后续增量，不再转发。 */
+    tripped?: boolean;
+    /** 旧链路已补发的分段卡片数（首段之外，内容只增不减，发一次即可）。 */
+    extraSegments: number;
+    /** 分段阈值（字符）：旧链路按代码围栏/标题分多张卡片。 */
+    segmentChars: number;
+}
+/**
+ * 按代码围栏/标题把长文本切成 ≤ limit 的多段（与 SDK 内部同一算法）：
+ * - 按行切，绝不把行切半；
+ * - 代码块保持完整（超限时闭合 ```，下一段重新打开）；
+ * - 接近上限时优先在标题行（# 开头）断开。
+ */
+export declare function splitWithCodeFences(text: string, limit: number): string[];
+/** 尾部重复检测结果。 */
+export interface TailRepetition {
+    /** 重复单元长度（字符）。 */
+    unitLength: number;
+    /** 单元在尾部连续出现的次数。 */
+    repeats: number;
+    /** 重复段总长（unitLength × repeats）。 */
+    totalLength: number;
+}
+/**
+ * 检测 text 尾部是否由同一单元连续重复构成（复读循环特征）。
+ * 只检查最后 REPETITION_WINDOW 个字符；命中返回重复信息，否则 null。
+ * 单元下限 4 字符排除 `────`、`====` 这类分隔线；非重复文本在首个
+ * 比较即失配，扫描成本约为单元长度上限次快速比较。
+ */
+export declare function detectTailRepetition(text: string): TailRepetition | null;
+/** 每个飞书会话的 agent 模式状态。 */
+interface ChatBinding {
+    /** `/attach` 接手的目标会话（GUI 会话等；不 dispose，只驱动）。 */
+    bound?: Agent;
+    /** 插件自动创建的专属会话（可 dispose 以重置上下文）。 */
+    auto?: AgentHandle;
+    /** 最近一次 `/sessions` 的编号 → 会话 id 映射（支持 /attach 数字选择）。 */
+    lastList?: Array<{
+        index: number;
+        id: string;
+    }>;
+    /** 最近一次 `/model list` 的编号 → provider/model 映射（支持 /model 数字选择）。 */
+    lastModelList?: Array<{
+        index: number;
+        provider: string;
+        model: string;
+    }>;
+    /** 最近一次 `/thinking list` 的编号 → 思考档位 id 映射（支持 /thinking 数字选择）。 */
+    lastThinkingList?: Array<{
+        index: number;
+        effort: string;
+    }>;
+}
+/** agent 模式共享状态：会话绑定、流式转发、确认问答、持久化。 */
+export interface InboundShared {
+    stateByChat: Map<string, ChatBinding>;
+    relays: Map<string, ChatStream>;
+    /** agent id → 飞书 chat_id（问答桥接与 steering 用）。 */
+    chatByAgent: Map<string, string>;
+    /** 飞书侧确认问答（ask_user_question 覆盖 / feishu_ask_choice）。 */
+    questions: PendingQuestionState;
+    /** chat_id → session_id 持久化映射（重启后 resume）。 */
+    store?: ChatSessionStore;
+    /** chat_id → /model 设置的模型选择（重启后仍生效）。 */
+    modelStore?: ModelOverrideStore;
+    /** Headbot-managed persistent Bot session restoration. */
+    ensureConfiguredAgent?: () => Promise<Agent | undefined>;
+}
+/** 从自动创建的 agent id（feishu-<chatId>-<rand8>）反推 chat_id。 */
+export declare function chatIdFromAgentId(id: string): string | undefined;
+/**
+ * 解析自动创建 agent 时将使用的 provider/model/思考档位（单一事实来源，
+ * /new 提示、/model、/thinking 状态与实际创建走同一逻辑）：
+ * 1. `/model` / `/thinking` 命令为本飞书会话设置的覆盖（modelStore，
+ *    最高优先级；provider/model 来自 /model，reasoningEffort 来自
+ *    /thinking，共用同一条持久化记录）；
+ * 2. 插件配置的 `provider`/`model`/`reasoningEffort`（cordis.patch.yml）；
+ * 3. 缺失项回退 `ctx.agentDefaultModel.currentSelection()`（GUI 默认模型
+ *    及其思考档位，settings.yaml 的 agent-default-model 分节，热更新生效）。
+ *
+ * `reasoningEffort` 缺省（undefined）表示「跟随模型默认档位」——创建
+ * agent 与 installModelSelection 都按「不指定 effort」传递，由 DSH 物化
+ * 模型自身的 defaultEffort；只有明确覆盖（命令/配置/GUI 默认带档位）
+ * 才作为会话选择传递。
+ *
+ * @returns 解析结果；source 标记模型来自命令覆盖、插件配置还是 GUI
+ *          默认（混合取值时归为 default），全部缺失时返回 undefined。
+ */
+export declare function resolveAgentModel(ctx: Context, config: Config, chatId?: string, shared?: InboundShared): {
+    provider: string;
+    model: string;
+    reasoningEffort?: string;
+    source: 'override' | 'config' | 'default';
+} | undefined;
+/**
+ * 订阅飞书长连接事件，按 config.mode 路由每条入站消息。
+ * 每个会话内的消息串行处理，避免并发回复交错。
+ */
+export declare function attachInbound(ctx: Context, service: FeishuService, config: Config, shared: InboundShared): void;
+export {};

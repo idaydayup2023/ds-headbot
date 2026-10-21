@@ -1,7 +1,6 @@
-
 {
   "name": "ds-headbot",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "DSH plugin for DSH + ds-bot instance management and audited team communication.",
   "keywords": [
     "deepseek-harness",
@@ -20,6 +19,7 @@
   "exports": {
     ".": "./index.js",
     "./team": "./lib/team-plugin.js",
+    "./feishu": "./plugins/ds-headbot-feishu/lib/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
@@ -34,7 +34,9 @@
     "icon.svg",
     "deploy/Caddyfile",
     "docs/*.md",
-    "scripts/*.mjs"
+    "scripts/*.mjs",
+    "plugins/ds-headbot-feishu",
+    "!plugins/ds-headbot-feishu/node_modules"
   ],
   "dependencies": {
     "yaml": "^2.8.1"

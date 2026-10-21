@@ -2,6 +2,20 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.1] - 2026-10-21
+
+### Changed
+
+- Bundle the Headbot-maintained `ds-headbot-feishu` plugin and route Feishu input into the selected DS Bot's native DSH session.
+- Keep the original Feishu text as a readable user message and move the structured source envelope into a DSH context message hidden from Chat, while preserving the chat, message, sender, and reply-route metadata for the model.
+- Serialize work across every Feishu chat targeting the same Bot session.
+- Thread each normal Bot response back to the triggering Feishu message while preserving the Bot's existing identity, model, memory, tools, and team configuration.
+- Restore and report the selected Bot session on instance startup, monitor session-ID changes, and migrate enabled profiles away from the upstream package.
+- Forward the Feishu WebSocket lifecycle to Headbot status reporting from within the instance process.
+- Restore the selected DS Bot session only after the DSH agent and session-persistence services are ready.
+- Install the Feishu bridge from a packaged archive so isolated profiles resolve DSH peer dependencies, and repair prior links to the controller source tree.
+- Bump the bundled `ds-headbot-feishu` plugin to 0.1.1 so existing enabled instances reinstall the updated message presentation.
+
 ## [0.4.0] - 2026-10-20
 
 ### Added

@@ -1,0 +1,335 @@
+/**
+ * ds-headbot-feishu — DS Headbot's managed Feishu bridge for DeepSeek Harness.
+ *
+ * 功能：
+ * - 绑定：配置飞书自建应用的 appId/appSecret，通过官方 SDK 的 WebSocket
+ *   长连接接入（免公网回调地址），SDK 内置自动重连；
+ * - 互动（入站）：用户给机器人发消息 → 按 mode 处理
+ *   （echo 回显 / llm 用 ctx.llm 自动回复 / agent 转交给 DSH agent 回复）；
+ * - 互动（出站）：注册 feishu_* 模型工具，让 DSH agent 主动发消息、
+ *   回复、查会话、查消息、查连接状态、发交互卡片、发起确认问答；
+ * - 确认问答：agent 调用 ask_user_question 时问题以「按钮卡片 + 编号提示」
+ *   发到飞书（点按钮/回编号/回复选项文字/超时兜底），不再只在 Web 界面挂起；
+ * - 会话延续：chat→会话映射落盘，dsh web 重启后自动 resume 原 DSH 会话；
+ * - Headbot 模式下复用所选 DS Bot 的原生 DSH 会话，在入站消息中附带
+ *   飞书来源、会话、消息和发言人元数据，并将本轮回答引用到原消息。
+ *
+ * 加载方式（profile 的 cordis.patch.yml）：
+ * ```yaml
+ * - id: ds-headbot-feishu
+ *   name: ds-headbot-feishu
+ *   config:
+ *     appId: 'env:FEISHU_APP_ID'
+ *     appSecret: 'env:FEISHU_APP_SECRET'
+ *     mode: llm
+ *     provider: deepseek-official
+ *     model: deepseek-v4-flash
+ * ```
+ *
+ * @module ds-headbot-feishu
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { Agent, AgentRegistry } from '@deepseek-ai/dsh-agent'
+import { FeishuService, type FeishuPolicyConfig } from './service.ts'
+import { attachInbound, type InboundShared } from './inbound.ts'
+import { registerFeishuTools } from './tools.ts'
+import { PendingQuestionState } from './questions.ts'
+import { ChatSessionStore, ModelOverrideStore } from './persistence.ts'
+import { HeadbotFeishuStatus, mapFeishuConnectionState } from './status.ts'
+
+export const name = 'ds-headbot-feishu'
+export const inject = ['agents', 'sessionPersistence']
+
+export interface Config {
+  /** 飞书自建应用的 App ID（cli_xxx）。支持 `env:VAR` 形式从环境变量读取。 */
+  appId: string
+  /** 飞书自建应用的 App Secret。支持 `env:VAR` 形式从环境变量读取。 */
+  appSecret: string
+  /** 开放平台域名：feishu（默认，国内版）/ lark（国际版）。 */
+  domain?: 'feishu' | 'lark'
+  /** SDK 日志级别。 */
+  loggerLevel?: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'
+  /** 私聊策略（见 {@link FeishuPolicyConfig}）。 */
+  dmMode?: 'open' | 'allowlist' | 'pair' | 'disabled'
+  dmAllowlist?: string[]
+  /** 群聊白名单（chat_id 列表）；不配置表示不限制。 */
+  groupAllowlist?: string[]
+  /** 群聊中是否必须 @机器人 才回复（默认 true）。 */
+  requireMention?: boolean
+  /** 是否响应 @所有人 的消息（默认 false）。 */
+  respondToMentionAll?: boolean
+  /**
+   * 入站消息回复模式：
+   * - `echo` 回显原文（验证绑定）；
+   * - `llm` 用 ctx.llm 自动生成回复（默认）；
+   * - `agent` 转交给 DSH agent 会话回复（指定 agentId 复用会话；
+   *   不指定则每个飞书会话自动创建一个专属 agent）。
+   */
+  mode?: 'echo' | 'llm' | 'agent'
+  /** llm 模式的系统提示词。 */
+  systemPrompt?: string
+  /** llm 模式的 provider 路由（例如 deepseek-official）。 */
+  provider?: string
+  /** llm 模式的模型 id。 */
+  model?: string
+  /**
+   * 默认思考模式档位（v0.9.0，adapter 声明的 reasoning effort id，
+   * 如 `off` / `low` / `high` / `max`）：`llm` 模式直接随请求发送；
+   * `agent` 模式下作为新会话的默认档位（本飞书会话可用 `/thinking`
+   * 命令覆盖）。不配置时跟随模型默认档位；模型不支持时 DSH 会拒绝
+   * 请求（`UNSUPPORTED_REASONING_EFFORT`），此时请留空。
+   */
+  reasoningEffort?: string
+  /** llm 模式每会话保留的历史对话轮数（0 = 无记忆）。 */
+  maxHistory?: number
+  /** agent 模式：转交的目标 agent（ctx.agents 中的会话 id）；不配置则自动创建。 */
+  agentId?: string
+  /** 将消息投递到选定 DS Bot 的原生会话，并将回复引用到来源消息。 */
+  replyToSource?: boolean
+  /**
+   * 自动创建的 agent 使用的 preset id（如 `standard` / `liangshen`）。
+   * 不配置时跟随 GUI 设置的默认预设（agentPresets.defaultId）。
+   */
+  agentPreset?: string
+  /** agent 模式自动创建会话时的工作目录（默认 process.cwd()）。 */
+  workspace?: string
+  /**
+   * 是否启用飞书会话管理命令（默认 true，agent 模式生效）：
+   * - `/new` `/reset`：清空当前飞书会话上下文（销毁专属 agent，下条消息新建）；
+   * - `/sessions`：列出当前活跃的 DSH agent 会话；
+   * - `/attach <会话id>`：接手 GUI 中某个既有会话（此后该飞书会话驱动它）；
+   * - `/detach`：解除接手，回到自动创建模式。
+   */
+  commands?: boolean
+  /** 重置上下文命令列表（默认 ['/new', '/reset']）。 */
+  resetCommands?: string[]
+  /**
+   * `/attach` 接手会话后，发送最近几条对话历史到飞书（0 = 不发，
+   * 默认 5 条）。
+   */
+  attachHistory?: number
+  /**
+   * 飞书目标群 chat_id（oc_ 开头）。配置后 `feishu_push` 工具可用：
+   * 其他会话/定时任务的 agent 可把结果一键推送到该群。
+   */
+  pushChatId?: string
+  /** 是否注册模型可调用的 feishu_* 工具（默认 true）。 */
+  tools?: boolean
+  /** 回复消息的排版格式：markdown（富文本渲染，默认）或 text（纯文本）。 */
+  replyFormat?: 'markdown' | 'text'
+  /**
+   * 飞书侧确认问题等待回答的超时（ms，默认 10 分钟）。agent 调用
+   * ask_user_question 时问题会以交互卡片发到飞书；超时未答自动取消该次
+   * 询问，避免 agent 回合永久挂起、会话队列被堵死。
+   */
+  questionTimeoutMs?: number
+  /**
+   * 是否持久化 chat→会话映射（默认 true）：dsh web 重启后同一飞书会话
+   * 自动恢复原 DSH 会话（agents.resume），延续对话上下文。
+   */
+  persistSessions?: boolean
+  /**
+   * 流式/卡片内容的分段阈值（字符，默认 8000）：agent 输出（含大文件
+   * 内容）超过该长度时自动分多张卡片（多条消息）发送，不再一整段堆在
+   * 一张卡片里。范围 1000~30000。
+   *
+   * 实际分段按「单卡安全上限」执行：原生打字机卡片固定以 min(segmentChars,
+   * 8000) 封顶（飞书卡片 JSON 有 30KB 硬限制，CJK 8000 字符 ≈ 24KB），
+   * 超出部分自动切换到普通卡片链路续传（按 segmentChars 分段；卡片超限
+   * 时进一步降级为纯文本消息，内容不丢）。CJK 内容建议 ≤ 8000，否则
+   * 单张卡片可能触及 30KB 上限而自动降级为文本。
+   */
+  segmentChars?: number
+  /**
+   * 是否在 agent 回合开始时立即上屏「占位卡片」（默认 true，v0.6.7）：
+   * 收到消息即显示打字机占位卡（文案见 {@link Config.streamPlaceholder}），
+   * 工具执行期不再完全静默；首批文本到达后无缝续写同一张卡片。关闭后
+   * 回到旧行为（首批文本到达才创建卡片）。
+   */
+  eagerPlaceholder?: boolean
+  /** 占位卡片文案（默认「收到，正在处理…」）。 */
+  streamPlaceholder?: string
+}
+
+export const Config: z<Config> = z.object({
+  appId: z.string().required().description('飞书自建应用的 App ID（cli_xxx），支持 env:VAR 从环境变量读取'),
+  appSecret: z.string().required().description('飞书自建应用的 App Secret，支持 env:VAR 从环境变量读取'),
+  domain: z.union(['feishu', 'lark'] as const).default('feishu'),
+  loggerLevel: z.union(['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const).default('info'),
+  dmMode: z.union(['open', 'allowlist', 'pair', 'disabled'] as const).default('open'),
+  dmAllowlist: z.array(z.string()).default([]),
+  groupAllowlist: z.array(z.string()).default([]),
+  requireMention: z.boolean().default(true),
+  respondToMentionAll: z.boolean().default(false),
+  mode: z.union(['echo', 'llm', 'agent'] as const).default('llm'),
+  /** 回复消息的排版格式：markdown 富文本渲染（代码块/表格/列表）或纯文本。 */
+  replyFormat: z.union(['markdown', 'text'] as const).default('markdown'),
+  questionTimeoutMs: z.number().min(1000).default(600_000),
+  persistSessions: z.boolean().default(true),
+  segmentChars: z.number().min(1000).max(30000).default(8000),
+  eagerPlaceholder: z.boolean().default(true),
+  streamPlaceholder: z.string().default('收到，正在处理…'),
+  systemPrompt: z.string().default(
+    '你是部署在飞书上的智能助手。请用简洁、友好的中文回答用户的问题；'
+    + '涉及代码时直接给出可运行的代码块。',
+  ),
+  provider: z.string(),
+  model: z.string(),
+  reasoningEffort: z.string(),
+  maxHistory: z.number().min(0).default(20),
+  agentId: z.string(),
+  replyToSource: z.boolean().default(false),
+  agentPreset: z.string(),
+  workspace: z.string(),
+  commands: z.boolean().default(true),
+  resetCommands: z.array(z.string()).default(['/new', '/reset']),
+  attachHistory: z.number().min(0).default(5),
+  pushChatId: z.string(),
+  tools: z.boolean().default(true),
+})
+
+/** 把 `env:VAR` 形式的配置值解析为环境变量值。 */
+export function resolveSecret(raw: string): string {
+  if (raw.startsWith('env:')) {
+    const name = raw.slice(4)
+    const value = process.env[name]
+    if (value === undefined) {
+      throw new Error(`feishu-bot: 环境变量 ${name} 未设置（配置项使用了 env: 引用）`)
+    }
+    return value
+  }
+  return raw
+}
+
+export function apply(ctx: Context, config: Config): void {
+  const headbotStatus = new HeadbotFeishuStatus(ctx)
+  let restoreInFlight: Promise<Agent | undefined> | undefined
+  let retryAt = 0
+  let retryDelay = 1000
+  const ensureConfiguredAgent = async (): Promise<Agent | undefined> => {
+    if (!config.agentId) {
+      headbotStatus.setAgentStatus('offline')
+      return undefined
+    }
+    const agents = ctx.get('agents') as AgentRegistry | undefined
+    if (!agents) {
+      headbotStatus.setAgentStatus('failed')
+      return undefined
+    }
+    const sessionId = SessionId(config.agentId)
+    const live = agents.get(sessionId)
+    if (live) {
+      headbotStatus.setAgentStatus('online')
+      retryAt = 0
+      retryDelay = 1000
+      return live
+    }
+    if (restoreInFlight) return restoreInFlight
+    if (Date.now() < retryAt) {
+      headbotStatus.setAgentStatus('failed')
+      return undefined
+    }
+    headbotStatus.setAgentStatus('restoring')
+    restoreInFlight = (async () => {
+      try {
+        await agents.resume({ resumeSessionId: sessionId })
+        const restored = agents.get(sessionId)
+        if (!restored) throw new Error('the selected DS Bot session was not registered after resume')
+        headbotStatus.setAgentStatus('online')
+        retryAt = 0
+        retryDelay = 1000
+        return restored
+      } catch (error) {
+        headbotStatus.setAgentStatus('failed')
+        retryAt = Date.now() + retryDelay
+        retryDelay = Math.min(60_000, retryDelay * 2)
+        ctx.logger.warn('headbot: the selected DS Bot session could not be restored; will retry', error)
+        return undefined
+      } finally {
+        restoreInFlight = undefined
+      }
+    })()
+    return restoreInFlight
+  }
+  const sessionMonitor = config.agentId
+    ? setInterval(() => { void ensureConfiguredAgent() }, 3000)
+    : undefined
+  sessionMonitor?.unref?.()
+  if (sessionMonitor) ctx.effect(() => () => clearInterval(sessionMonitor), 'Headbot DS Bot session restoration')
+  if (config.agentId) void ensureConfiguredAgent()
+  else headbotStatus.setAgentStatus('offline')
+
+  const service = new FeishuService(ctx, {
+    appId: resolveSecret(config.appId),
+    appSecret: resolveSecret(config.appSecret),
+    domain: config.domain,
+    loggerLevel: config.loggerLevel,
+    policy: {
+      dmMode: config.dmMode,
+      dmAllowlist: config.dmAllowlist,
+      groupAllowlist: config.groupAllowlist,
+      requireMention: config.requireMention,
+      respondToMentionAll: config.respondToMentionAll,
+    } satisfies FeishuPolicyConfig,
+    // 流式卡片分段：超过 segmentChars 自动 rollover 成多张卡片（按代码围栏/标题切）。
+    // streamInitialText：占位卡片文案（v0.6.7 回合开始即上屏，工具期不再静默）。
+    outbound: {
+      streamMaxElementChars: config.segmentChars ?? 8000,
+      streamInitialText: config.streamPlaceholder ?? '收到，正在处理…',
+    },
+  })
+
+  const updateConnectionStatus = (): void => {
+    process.env.HEADBOT_FEISHU_STATUS = mapFeishuConnectionState(service.getConnectionStatus()?.state)
+  }
+  updateConnectionStatus()
+  const connectionMonitor = setInterval(updateConnectionStatus, 1000)
+  connectionMonitor.unref?.()
+  ctx.effect(() => () => clearInterval(connectionMonitor), 'Headbot Feishu connection status')
+
+  // 插件卸载时断开长连接。
+  ctx.effect(() => {
+    return () => {
+      void service.disconnect().catch((error: unknown) => {
+        ctx.logger.warn('feishu: 断开长连接失败', error)
+      })
+    }
+  })
+
+  // 建立长连接（SDK 自动重连；初始失败只记录日志，不阻断插件加载）。
+  process.env.HEADBOT_FEISHU_STATUS = 'connecting'
+  void service.connect()
+    .then(() => {
+      updateConnectionStatus()
+      const identity = service.getBotIdentity()
+      ctx.logger.info(`feishu: 长连接已就绪（机器人：${identity?.name ?? identity?.openId ?? 'unknown'}）`)
+    })
+    .catch((error: unknown) => {
+      process.env.HEADBOT_FEISHU_STATUS = 'retrying'
+      ctx.logger.error('feishu: 连接长连接失败，请检查 appId/appSecret 与网络（SDK 将自动重试）', error)
+    })
+
+  // 入站互动：飞书消息 → 机器人回复。
+  // 共享状态：会话绑定 / 流式转发 / 飞书侧确认问答 / 持久化映射。
+  const questions = new PendingQuestionState(ctx, service, config.questionTimeoutMs ?? 600_000)
+  const store = config.persistSessions === false ? undefined : ChatSessionStore.load()
+  // /model 覆盖独立于会话映射持久化（不受 persistSessions 开关影响）。
+  const shared: InboundShared = {
+    stateByChat: new Map(),
+    relays: new Map(),
+    chatByAgent: new Map(),
+    questions,
+    store,
+    modelStore: ModelOverrideStore.load(),
+    ensureConfiguredAgent,
+  }
+  attachInbound(ctx, service, config, shared)
+
+  // 出站互动：模型可调用 feishu_* 工具。
+  if (config.tools !== false) {
+    registerFeishuTools(ctx, service, config.pushChatId, questions)
+  }
+}

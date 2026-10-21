@@ -1,0 +1,6 @@
+# Headbot writes the enabled app credentials and selected Bot session binding to the
+# per-instance overlay. Keep this package entry disabled unless Headbot enables it.
+- insert:
+    - id: ds-headbot-feishu
+      name: ds-headbot-feishu
+      disabled: true

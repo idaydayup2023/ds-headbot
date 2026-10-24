@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.3] - 2026-10-24
+
+### Fixed
+
+- Keep the management page open during a manual DSH upgrade, retry status checks through the service restart, and display the confirmed installed version when complete.
+- Mark web-triggered DSH upgrades explicitly so the updater can bypass only its active-connection deferral; background updates keep the idle check.
+
 ## [0.4.2] - 2026-10-24
 
 ### Changed

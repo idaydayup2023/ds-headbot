@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { execFileSync } from 'node:child_process'
-import { access, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -350,7 +350,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.4.2')
+  assert.equal(headbotVersion, '0.4.3')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
@@ -596,4 +596,112 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   assert.equal(upgradeRequests, 1)
   assert.equal(upgradeButton.disabled, true)
   assert.equal(upgradeButton.textContent, '正在升级…')
+})
+
+test('browser keeps DSH upgrade visible while the service restarts and reports completion', async () => {
+  const elements = new Map(), handlers = new Map(), timers = new Map()
+  let nextTimerId = 0, pollPromise, updateState = 'idle', runtimeReads = 0
+  function element(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', disabled: false, hidden: false, href: '', children: [],
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const document = {
+    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+    createElement(tag) { return element(tag) },
+  }
+  const source = renderManagerPage().match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, window:{location:{origin:'http://localhost'}}, setInterval() {}, confirm() { return true },
+    setTimeout(callback, delay) { const id=++nextTimerId;timers.set(id,{callback,delay});return id },
+    clearTimeout(id) { timers.delete(id) },
+    FormData: class { constructor() {} get() { return '' } },
+    async fetch(url) {
+      if (url.endsWith('/runtime-versions/dsh/upgrade')) {
+        updateState = 'installing'
+        return { status:202, ok:true, async json() { return { state:updateState } } }
+      }
+      if (url.includes('/runtime-versions')) {
+        runtimeReads++
+        if (updateState === 'restarting' && runtimeReads === 3) throw new Error('connection reset during DSH restart')
+        const dsh = updateState === 'completed'
+          ? { currentVersion:'0.2.1-rc.3', latestVersion:'0.2.1-rc.3', updateAvailable:false, canUpdate:true, state:updateState, message:'已升级到 0.2.1-rc.3' }
+          : { currentVersion:'0.2.1-rc.2', latestVersion:'0.2.1-rc.3', updateAvailable:updateState==='idle', canUpdate:true, state:updateState, message:'正在安装 DSH 更新' }
+        return { status:200, ok:true, async json() { return { dsh, dsBot:{ instances:[], latestVersion:'0.1.7', updateAvailable:false } } } }
+      }
+      const data = url.includes('/release')
+        ? { currentVersion:'0.4.2', latestVersion:'0.4.2', updateAvailable:false, state:'idle' }
+        : url.includes('/audit') ? { events:[], nextBefore:null }
+        : url.includes('/models') ? { models:[] }
+        : { teams:[] }
+      return { status:200, ok:true, async json() { return data } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  const upgradeButton = elements.get('#upgrade-dsh')
+  assert.equal(upgradeButton.disabled, false)
+  await handlers.get('#upgrade-dsh:click')({ currentTarget:upgradeButton })
+  assert.equal(upgradeButton.textContent, '正在升级…')
+  assert.ok([...timers.values()].some(timer => timer.delay === 2500), 'busy state schedules a quick status poll')
+
+  updateState = 'restarting'
+  const poll = [...timers.entries()].find(([,timer]) => timer.delay === 2500)
+  timers.delete(poll[0])
+  pollPromise = poll[1].callback()
+  await new Promise(resolve => setImmediate(resolve))
+  await pollPromise
+  assert.equal(elements.get('#dsh-version-status').textContent, 'DSH 正在重启，页面会自动重新连接并检查升级结果。')
+  assert.equal(upgradeButton.disabled, true)
+
+  updateState = 'completed'
+  const retry = [...timers.entries()].find(([,timer]) => timer.delay === 2500)
+  assert.ok(retry, 'a dropped connection schedules a reconnect poll')
+  timers.delete(retry[0])
+  pollPromise = retry[1].callback()
+  await new Promise(resolve => setImmediate(resolve))
+  await pollPromise
+  assert.equal(elements.get('#current-dsh-version').textContent, '当前版本：v0.2.1-rc.3')
+  assert.equal(elements.get('#dsh-version-status').textContent, '已升级到 0.2.1-rc.3')
+  assert.equal(upgradeButton.textContent, '已是最新')
+})
+
+test('manual DSH upgrade worker marks its updater invocation as user initiated', async t => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'headbot-dsh-updater-')))
+  t.after(() => rm(root, { recursive:true, force:true }))
+  const appRoot = path.join(root, 'DeepSeekHarness')
+  const versions = path.join(appRoot, 'versions')
+  const currentRoot = path.join(appRoot, 'current')
+  const updateScript = path.join(appRoot, 'bin/update.sh')
+  const stateFile = path.join(root, 'headbot/dsh-update-state.json')
+  const oldExecutable = path.join(versions, '0.2.1-rc.2/node_modules/.bin/dsh')
+  await mkdir(path.dirname(oldExecutable), { recursive:true })
+  await mkdir(path.dirname(updateScript), { recursive:true })
+  await mkdir(path.dirname(stateFile), { recursive:true })
+  await writeFile(oldExecutable, '#!/bin/sh\nprintf "0.2.1-rc.2\\n"\n', { mode:0o700 })
+  await symlink(path.join(versions, '0.2.1-rc.2'), currentRoot)
+  await writeFile(updateScript, `#!/bin/sh
+set -eu
+[ "$HEADBOT_DSH_WEB_UPGRADE" = "1" ]
+printf '%s' "$HEADBOT_DSH_WEB_UPGRADE" > "$PWD/state/web-upgrade-mode"
+NEW="$PWD/versions/0.2.1-rc.3/node_modules/.bin/dsh"
+mkdir -p "$(dirname "$NEW")"
+printf '#!/bin/sh\\nprintf "0.2.1-rc.3\\\\n"\\n' > "$NEW"
+chmod +x "$NEW"
+ln -s "$PWD/versions/0.2.1-rc.3" "$PWD/current.new"
+mv -fh "$PWD/current.new" "$PWD/current"
+`, { mode:0o700 })
+  const config = { appRoot, currentRoot, dataHome:path.join(root, 'data'), expectedVersion:'0.2.1-rc.3', stateFile, updateScript, manualWebUpgrade:true }
+  let workerError=''
+  try { execFileSync(process.execPath, [path.join(process.cwd(), 'lib/runtime-updater.js'), JSON.stringify(config)], { stdio:'pipe' }) }
+  catch(error) { workerError=error.stderr?.toString()||error.message }
+  const state = JSON.parse(await readFile(stateFile, 'utf8'))
+  assert.equal(state.state, 'completed', `${workerError} ${JSON.stringify(state)}`)
+  assert.equal(await readFile(path.join(appRoot, 'state/web-upgrade-mode'), 'utf8'), '1')
+  assert.equal(state.message, '已升级到 0.2.1-rc.3')
 })

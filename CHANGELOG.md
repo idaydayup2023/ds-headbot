@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.2] - 2026-10-24
+
+### Changed
+
+- Remove the Caddy configuration download and serve the manager and all instances over HTTP on port 80.
+- Generate HTTP-only instance links and preserve DSH sessions by removing Secure from cookies at the HTTP ingress.
+
 ## [0.4.1] - 2026-10-21
 
 ### Changed

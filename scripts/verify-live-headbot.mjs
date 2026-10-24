@@ -24,7 +24,8 @@ function scopedCookies(response, mount) {
   for (const cookie of cookies) {
     const attributes = cookie.split(';').map(item => item.trim())
     assert.ok(attributes.includes(`Path=${mount}/`), 'cookie path is not properly delimited')
-    for (const required of ['Secure', 'HttpOnly', 'SameSite=Strict']) assert.ok(attributes.includes(required))
+    for (const required of ['HttpOnly', 'SameSite=Strict']) assert.ok(attributes.includes(required))
+    assert.ok(!attributes.includes('Secure'))
   }
   return cookies.map(item => item.split(';')[0]).join('; ')
 }
@@ -32,7 +33,7 @@ function request(route, { method = 'GET', body, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body)
     const req = http.request({ hostname: '127.0.0.1', port: ingressPort, path: route, method,
-      headers: { Host: publicHost, Origin: `https://${publicHost}`, ...(cookie ? { Cookie: cookie } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}), ...headers }, timeout: 30000 }, res => {
+      headers: { Host: publicHost, Origin: `http://${publicHost}`, ...(cookie ? { Cookie: cookie } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}), ...headers }, timeout: 30000 }, res => {
       const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks), json() { return JSON.parse(this.bytes) } }))
     })
     req.on('error', reject); req.on('timeout', () => req.destroy(new Error('request timeout'))); req.end(data)
@@ -81,7 +82,7 @@ try {
   assert.ok([302, 303].includes(login.status), `login HTTP ${login.status}`)
   cookie = scopedCookies(login, '/dsh')
   results.checks.push('unauthenticated admission and controller login with scoped cookie')
-  assert.equal((await request(prefix + '/teams', { headers: { Origin: 'https://untrusted.invalid' } })).status, 403)
+  assert.equal((await request(prefix + '/teams', { headers: { Origin: 'http://untrusted.invalid' } })).status, 403)
   assert.equal((await request('/dsh/manage/')).status, 200)
   for (const id of ids) {
     await api('/teams', { method: 'POST', body: { id, name: `Verification ${id}`, port: await freePort(), autoStart: false } }, 202)

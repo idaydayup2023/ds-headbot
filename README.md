@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current release: **0.4.1**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+Current package version: **0.4.2**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -11,16 +11,16 @@ Each additional team receives its own DSH home, `web` profile state, ds-bot conf
 
 ## Access model
 
-All instances are available through HTTPS path routing under one or more approved hostnames or IP addresses. The same routes work from a LAN address and a firewall-forwarded address; the manager's **打开** button keeps the address used to open the manager:
+All instances use plain HTTP on port 80 under one or more approved hostnames or IP addresses. The manager keeps the address used to open it when generating instance links:
 
 | URL | Purpose |
 | --- | --- |
-| `http://<host>[:port]/` | Redirects to HTTPS and opens the Headbot manager |
-| `https://<host>[:port]/dsh/` | Controller DSH Web UI |
-| `https://<host>[:port]/dsh/manage/` | DS Headbot team manager |
-| `https://<host>[:port]/teams/<team-id>/` | One team's DSH + ds-bot instance |
+| `http://<host>/` | Headbot manager |
+| `http://<host>/dsh/` | Controller DSH Web UI |
+| `http://<host>/dsh/manage/` | DS Headbot team manager |
+| `http://<host>/teams/<team-id>/` | One team's DSH + ds-bot instance |
 
-Port 80 redirects to the configured HTTPS port (443 by default). Caddy terminates TLS and forwards to Headbot's loopback ingress on port 3180. Headbot routes requests to the controller and team ports, strips each path prefix, preserves the browser `Host`, forwards WebSocket upgrades, and scopes each DSH cookie to its path.
+Headbot listens on loopback port 3180 and routes the controller and team paths. On the Agent Mac, PF forwards inbound TCP port 80 to this local ingress; DSH and team services remain on loopback. HTTP traffic is unencrypted.
 
 ## Install the DSH plugin
 
@@ -32,14 +32,15 @@ dsh plugin --profile web add github:idaydayup2023/ds-headbot
 
 The package declares its DSH bundle through `dsh.bundle.patch` in `package.json`; DSH applies this patch to register the manager plugin in the Web profile.
 
-Set the canonical public host and any additional browser-facing host aliases in the environment used to launch DSH and Caddy. `publicHost` is used for the DSH-advertised URL; `publicHosts` adds the other accepted authorities. For example:
+Set the canonical public host and any additional browser-facing host aliases in the `ds-headbot` bundle configuration. `publicHost` is used for DSH-advertised links; `publicHosts` adds accepted authorities. For example:
 
-```sh
-export HEADBOT_PUBLIC_HOST=agent.lan
-export HEADBOT_PUBLIC_HOSTS=agent.example.net
+```yaml
+publicHost: agent.lan
+publicHosts:
+  - agent.example.net
 ```
 
-If DSH runs as a macOS LaunchAgent, add these variables to that launcher's environment. The values must match the `publicHost` and `publicHosts` options in the `ds-headbot` bundle configuration and the Caddy host routes. The parent DSH service environment must also include `dsh` and `pnpm` on `PATH`, or set `dshCommand` to the absolute DSH executable path.
+The parent DSH service environment must include `dsh` and `pnpm` on `PATH`, or set `dshCommand` to the absolute DSH executable path.
 
 Start the controller DSH on loopback with its public path and trusted LAN authority:
 
@@ -48,26 +49,18 @@ dsh --profile web \
   --host 127.0.0.1 \
   --port 3080 \
   --no-open \
-  --public-url "https://$HEADBOT_PUBLIC_HOST/dsh/" \
+  --public-url "http://$HEADBOT_PUBLIC_HOST/dsh/" \
   --trusted-host "$HEADBOT_PUBLIC_HOST" \
   --trusted-host agent.example.net
 ```
 
 Repeat `--trusted-host` for every `publicHosts` alias. DSH treats `--public-url` as one advertised URL; each alias is admitted separately by the repeatable `--trusted-host` option. Headbot passes all configured authorities to each managed DSH process and rewrites absolute redirects to retain the browser's current authority.
 
-The controller's printed token URL is the initial sign-in link. Open it once in a browser; after that, use `https://<host>/` or `/dsh/manage/`. The manager API uses DSH's Connection admission check, so unauthenticated or cross-origin state-changing requests are rejected. The static manager page itself contains no team data.
-
-## Enable the LAN HTTPS entry
-
-Use the Caddy configuration downloaded from the manager when serving multiple addresses or a non-default HTTPS port; it contains a route and certificate site for every configured host. [`deploy/Caddyfile`](deploy/Caddyfile) is a single-host starter template. Caddy owns the public ports; DSH and Headbot bind to loopback.
-
-This template uses Caddy's internal CA, which is suitable for a private LAN but is not trusted by client devices automatically. Trust the CA on the Agent Mac and install the generated root certificate on each browser device that should open Headbot. [Caddy's documentation](https://caddyserver.com/docs/caddyfile/directives/tls) explains the root certificate and `caddy trust` setup. Alternatively, replace `tls internal` with a certificate/key pair trusted by those devices.
-
-The manager page can download the generated Caddyfile using `publicHost`, `publicHosts`, and optional `httpsPort` configuration. The plugin does not overwrite the system Caddy configuration or restart a system service.
+The controller's printed token URL is the initial sign-in link. Open it once in a browser; after that, use `http://<host>/` or `/dsh/manage/`. The manager API uses DSH's Connection admission check, so unauthenticated or cross-origin state-changing requests are rejected. The static manager page itself contains no team data.
 
 ## Add and manage instances
 
-Open `https://<host>/dsh/manage/`, then create a team with a lowercase identifier, display name, and unique port. The team list lets you edit its display name and port; changing a running team's port stops and restarts it on the new port while preserving its previous running state. On its first start, Headbot:
+Open `http://<host>/dsh/manage/`, then create a team with a lowercase identifier, display name, and unique port. The team list lets you edit its display name and port; changing a running team's port stops and restarts it on the new port while preserving its previous running state. On its first start, Headbot:
 
 1. creates `<DSH_HOME>/headbot/teams/<id>/home` as the team's isolated DSH data home;
 2. copies the controller's `settings.yaml`, model entries (`llm-*` and `agent-default-model`) from its Web profile patch, and stored credentials when present, removing the controller's browser-session signing grant;
@@ -137,7 +130,6 @@ If changing the bundle's `config` in a Cordis patch, restate every field because
     publicHost: agent.lan
     publicHosts:
       - agent.example.net
-    httpsPort: 10443
     ingressPort: 3180
     controllerPath: dsh
     teamsPath: teams
@@ -153,7 +145,7 @@ Keep team ports distinct from the controller port, ingress port, 80, and 443. He
 
 ## Rollback
 
-To roll back the bundle, stop the controller DSH and remove or disable `ds-headbot` from the Web profile. Restore the prior Caddy configuration and reload Caddy. Team state lives under `$DSH_HOME/headbot/`; removing the bundle does not delete it. Reinstalling the bundle restores the manager definitions and can restart enabled teams.
+To roll back the bundle, stop the controller DSH and remove or disable `ds-headbot` from the Web profile. Restore the previous Headbot package, DSH launch arguments, PF rules, and saved system configuration from the maintenance backup. Team state lives under `$DSH_HOME/headbot/`; removing the bundle does not delete it. Reinstalling the bundle restores the manager definitions and can restart enabled teams.
 
 Version 0.2 upgrades `teams.json` to schema 2 and saves the original schema 1 file as `teams.v1.backup.json`. Version 0.1 refuses schema 2 instead of silently discarding communication identities. Before reverting to 0.1, stop the controller and preserve a complete schema 2 data snapshot; restore the pre-upgrade snapshot for the old version. Keep the schema 2 snapshot for upgrading again, because it contains the identities associated with subsequent audit history. Do not mix `teams.json` from one snapshot with another snapshot's communication archive.
 
@@ -162,12 +154,12 @@ Version 0.2 upgrades `teams.json` to schema 2 and saves the original schema 1 fi
 - DS Headbot is a DSH Web profile plugin and the management layer for multiple DSH + ds-bot instances.
 - Team DSH homes are separate directories but run as the same macOS user; they are not an OS-level security boundary.
 - All exchanges made through the communication plugin pass through the audit module. A same-user process with unrestricted filesystem or network tools can still use other channels; enforcing auditing against those channels requires additional OS/container isolation. The local hash chain detects corruption and changes against its checkpoint, but an administrator who can rewrite both files is outside this trust boundary.
-- HTTPS certificate lifecycle is delegated to Caddy. With `tls internal`, each client device must trust Caddy's CA.
+- The public manager uses HTTP on port 80; session traffic is unencrypted.
 - This release targets the DSH `web` profile and its `--public-url` prefix-stripping deployment contract.
-- Two real DSH + ds-bot instances were verified in an isolated Agent-Mac home, including path login, client assets, lifecycle, communication tools and audit exports. Production deployment and TLS acceptance are recorded separately on the host.
+- Two real DSH + ds-bot instances were verified in an isolated Agent-Mac home, including path login, client assets, lifecycle, communication tools and audit exports. Production HTTP acceptance is recorded separately on the host.
 
 In a source checkout, run `npm install --ignore-scripts` and `npm test` for the lifecycle, HTTP admission, tool communication, attachment, migration, and audit fault checks. These checks use a simulated DSH process and do not call a model.
 
 To check a future DSH upgrade, run `node scripts/verify-installed-dsh.mjs /path/to/dsh-installation`. This loads the installed Cordis and DSH tool registry in an isolated process and verifies registration of all four communication tools, without modifying an existing profile or calling a model. See [verification record](docs/verification-2026-10-17.md) for the current results.
 
-For an authorized live lifecycle check, run `node scripts/verify-live-headbot.mjs /path/to/config.json` on the controller host. The configuration names `home`, `log` (controller startup log), `installation`, `ingressPort`, `controllerPort`, `publicHost` and optional `output`/`expectedTeamPlugins`. It authenticates with the current launch URL internally, creates two uniquely named temporary teams, checks their pages and tools, then deletes only those definitions. Their archived files and audit records remain for inspection. It never prints credentials or calls a model. Verify the public TLS entry and browser separately.
+For an authorized live lifecycle check, run `node scripts/verify-live-headbot.mjs /path/to/config.json` on the controller host. The configuration names `home`, `log` (controller startup log), `installation`, `ingressPort`, `controllerPort`, `publicHost` and optional `output`/`expectedTeamPlugins`. It authenticates with the current launch URL internally, creates two uniquely named temporary teams, checks their pages and tools, then deletes only those definitions. Their archived files and audit records remain for inspection. It never prints credentials or calls a model. Verify the public HTTP entry and browser separately.

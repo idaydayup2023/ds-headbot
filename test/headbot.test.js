@@ -137,7 +137,8 @@ test('ingress scopes browser cookies while preserving attribute separators', asy
     const attributes=response.headers.getSetCookie()[0].split(';').map(item=>item.trim())
     assert.ok(attributes.includes(`Path=${mount}/`), attributes.join(';'))
     assert.ok(attributes.includes('Expires=Mon, 16 Nov 2026 03:18:29 GMT'))
-    for (const attr of ['HttpOnly', 'SameSite=Strict', 'Secure']) assert.ok(attributes.includes(attr))
+    for (const attr of ['HttpOnly', 'SameSite=Strict']) assert.ok(attributes.includes(attr))
+    assert.ok(!attributes.includes('Secure'))
   }
 })
 
@@ -349,7 +350,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.4.1')
+  assert.equal(headbotVersion, '0.4.2')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)

@@ -1,6 +1,6 @@
 {
   "name": "ds-headbot-feishu",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Headbot-managed Feishu bridge for native DS Bot sessions with source-tagged messages and targeted replies.",
   "type": "module",
   "main": "lib/index.js",

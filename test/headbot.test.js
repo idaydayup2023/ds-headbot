@@ -177,7 +177,7 @@ test('Feishu bridge is packed for isolated profiles instead of treated as an ins
   assert.ok(members.includes('package/package.json'))
   assert.equal(members.some(member => member.includes('node_modules')), false)
 
-  const packagedDirectory = path.join(profileModules, '.pnpm/ds-headbot-feishu@0.1.1/node_modules/ds-headbot-feishu')
+  const packagedDirectory = path.join(profileModules, '.pnpm/ds-headbot-feishu@0.1.2/node_modules/ds-headbot-feishu')
   await mkdir(packagedDirectory, { recursive: true })
   await writeFile(path.join(packagedDirectory, 'package.json'), await readFile(path.join(manager.feishuPluginPath(), 'package.json')))
   await unlink(installedPath)
@@ -350,7 +350,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.4.3')
+  assert.equal(headbotVersion, '0.4.4')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)

@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current package version: **0.4.3**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+Current package version: **0.4.4**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 

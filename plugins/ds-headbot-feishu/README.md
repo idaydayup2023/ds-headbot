@@ -10,10 +10,15 @@ Headbot's first-party Feishu bridge plugin for managed DSH instances. It is pack
 - Associates the hidden route context with the adjacent readable Feishu user message; the body is not duplicated inside the JSON envelope.
 - Serializes all Feishu chats that target the same Bot session, so concurrent group messages cannot replace the active reply route.
 - Sends the Bot's normal response as a Feishu reply to the source message. The envelope also gives `feishu_reply_message`, `feishu_send_message`, and card tools the exact chat/message IDs when a separate tool-driven response is needed.
+- Supports updating an existing shared card with `feishu_update_card`, using the `message_id` returned by `feishu_send_card`; this replaces the existing card instead of posting another message.
 - Does not fall back to an unthreaded message when Feishu rejects the source reply; this avoids sending an answer where it could be mistaken for a response to another person.
 - Preserves the upstream Feishu WebSocket connection, commands, model selection, question cards, outbound tools, and session persistence.
 
 Feishu messages appear in the same DS Bot session as local messages. The transcript shows the original text with a short Feishu/sender label, while the routing envelope remains a hidden context message. This is intentional: the existing DS Bot session is the single communication model for both channels. Bot replies retain the sender/message association through Feishu's reply-to relationship.
+
+### Updating a sent card
+
+Use `feishu_send_card` to create a card and retain its returned `message_id`. To change the card later, call `feishu_update_card` with that ID and the complete replacement card JSON. The original and replacement card must both set `config.update_multi` to `true`; this allows the shared card to update for everyone who can see it. Updates are limited by Feishu to cards sent by this app, cards not withdrawn, and messages sent within the previous 14 days. The app also needs the `im:message:update` permission. If an existing card was sent without `update_multi: true`, send a new shared card before using updates on it.
 
 ## Headbot configuration
 

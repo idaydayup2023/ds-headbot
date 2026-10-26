@@ -2,6 +2,14 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.4] - 2026-10-26
+
+### Added
+
+- Add the `feishu_update_card` tool so a Bot can replace an app-sent shared Feishu card by `message_id` instead of sending a duplicate message.
+- Require `config.update_multi: true` on replacement cards and explain the original-card, permission, and age requirements in the Feishu plugin documentation.
+- Bump the bundled `ds-headbot-feishu` plugin to 0.1.2 so enabled instances reinstall the card-update tool.
+
 ## [0.4.3] - 2026-10-24
 
 ### Fixed

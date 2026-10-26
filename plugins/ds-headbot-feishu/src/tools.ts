@@ -337,7 +337,7 @@ export function registerFeishuTools(
       card_json: {
         type: 'string',
         required: true,
-        description: '飞书卡片 JSON 2.0 的完整 JSON 字符串，如 {"schema":"2.0","config":{"update_multi":false},"body":{"elements":[{"tag":"markdown","content":"你好"}]}}',
+        description: '飞书卡片 JSON 2.0 的完整 JSON 字符串。若后续要更新卡片，发送时必须在 config 中设置 update_multi=true，例如 {"schema":"2.0","config":{"update_multi":true},"body":{"elements":[{"tag":"markdown","content":"你好"}]}}。',
       },
       reply_to: { type: 'string', description: '可选：要引用的消息 message_id（回复该消息）' },
     },
@@ -369,6 +369,62 @@ export function registerFeishuTools(
         return {
           sent: false,
           target: args.target,
+          detail: error instanceof Error ? error.message : String(error),
+        }
+      }
+    },
+  }))
+
+  // ── 更新已发送卡片 ────────────────────────────────────────
+  register(defineTool({
+    name: 'feishu_update_card',
+    description: '更新当前飞书机器人此前发送的一张交互卡片，不会新发消息。使用 feishu_send_card 返回的 message_id 和完整的新卡片 JSON。仅支持机器人自己发送、未撤回且 14 天内的共享卡片；原卡片发送时以及本次 card_json 的 config 都必须设置 update_multi=true。更新会替换整张卡片，对群内所有可见成员生效。',
+    parameters: {
+      message_id: {
+        type: 'string',
+        required: true,
+        description: 'feishu_send_card 返回的 message_id（om_ 开头）',
+      },
+      card_json: {
+        type: 'string',
+        required: true,
+        description: '完整的新飞书卡片 JSON；这是全量替换，不是局部字段补丁，且 config.update_multi 必须为 true。',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          updated: { type: 'boolean', required: true },
+          message_id: { type: 'string', required: true },
+          detail: { type: 'string' },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.updated
+          ? `已更新飞书卡片 ${value.message_id}`
+          : `更新卡片失败：${value.detail ?? '未知错误'}`,
+      }],
+    },
+    execute: async (args) => {
+      try {
+        const card: unknown = JSON.parse(args.card_json)
+        if (card === null || typeof card !== 'object' || Array.isArray(card)) {
+          throw new Error('card_json 必须是 JSON 对象')
+        }
+        const config = (card as { config?: unknown }).config
+        if (config === null || typeof config !== 'object' || Array.isArray(config)
+          || (config as { update_multi?: unknown }).update_multi !== true) {
+          throw new Error('card_json.config.update_multi 必须为 true；原卡片发送时也必须启用共享卡片更新')
+        }
+        await service.updateCard(args.message_id, card)
+        return { updated: true, message_id: args.message_id }
+      } catch (error) {
+        return {
+          updated: false,
+          message_id: args.message_id,
           detail: error instanceof Error ? error.message : String(error),
         }
       }

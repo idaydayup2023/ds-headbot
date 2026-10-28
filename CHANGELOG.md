@@ -2,6 +2,12 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.6] - 2026-10-28
+
+### Changed
+
+- Check the latest published DeepSeek Harness GitHub release across all release channels, and pass the discovered version to the manual updater instead of following npm's `next` tag.
+
 ## [0.4.5] - 2026-10-28
 
 ### Fixed

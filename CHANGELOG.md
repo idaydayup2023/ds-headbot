@@ -2,7 +2,7 @@
 
 All notable changes to DS Headbot are recorded here.
 
-## [Unreleased]
+## [0.4.5] - 2026-10-28
 
 ### Fixed
 

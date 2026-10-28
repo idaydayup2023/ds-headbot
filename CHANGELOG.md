@@ -2,6 +2,16 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [Unreleased]
+
+### Added
+
+- Seed team help-seeking institution on every team provisioning/start: `docs/team-help-protocol.md` is copied into each team's bot workspace as `跨团队求助协议.md`, and an `AGENTS.md` onboarding section (marker `ds-headbot:team-onboarding:v1`, appended once, existing content preserved) teaches the four `headbot_*` communication tools, the P0/P1/P2 help-ticket format, requestId retry discipline, and the escalation path — so any fresh deployment natively knows how to ask sibling teams for help. Seeding is idempotent, never clobbers team-modified files, and failures only warn without blocking team startup.
+
+### Fixed
+
+- Release updater test pinned a stale `0.4.5` version literal; now asserts stable semver shape instead.
+
 ## [0.4.7] - 2026-10-28
 
 ### Changed

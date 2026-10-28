@@ -350,7 +350,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.4.5')
+  assert.match(headbotVersion, /^\d+\.\d+\.\d+$/, 'headbotVersion must be a stable semver')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)
@@ -704,4 +704,45 @@ mv -fh "$PWD/current.new" "$PWD/current"
   assert.equal(state.state, 'completed', `${workerError} ${JSON.stringify(state)}`)
   assert.equal(await readFile(path.join(appRoot, 'state/web-upgrade-mode'), 'utf8'), '1')
   assert.equal(state.message, '已升级到 0.2.1-rc.3')
+})
+
+import { seedTeamOnboarding, PROTOCOL_FILE, AGENTS_FILE, ONBOARDING_MARKER } from '../lib/onboarding.js'
+import { fileURLToPath } from 'node:url'
+
+test('team onboarding seeds protocol and AGENTS.md idempotently', async t => {
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const root = await mkdtemp(path.join(tmpdir(), 'onboard-test-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const botRoot = path.join(root, 'workspace')
+
+  const first = await seedTeamOnboarding(botRoot, { packageRoot })
+  assert.equal(first.protocolSeeded, true)
+  assert.equal(first.agentsUpdated, true)
+  const protocol = await readFile(path.join(botRoot, PROTOCOL_FILE), 'utf8')
+  assert.match(protocol, /跨团队求助协议 v1/)
+  assert.match(protocol, /headbot_send_message/)
+  const agents = await readFile(path.join(botRoot, AGENTS_FILE), 'utf8')
+  assert.ok(agents.includes(ONBOARDING_MARKER))
+
+  // idempotent re-run changes nothing
+  const second = await seedTeamOnboarding(botRoot, { packageRoot })
+  assert.equal(second.protocolSeeded, false)
+  assert.equal(second.agentsUpdated, false)
+  assert.equal(await readFile(path.join(botRoot, AGENTS_FILE), 'utf8'), agents)
+
+  // pre-existing AGENTS.md content is preserved and section appended once
+  const root2 = await mkdtemp(path.join(tmpdir(), 'onboard-test-'))
+  t.after(() => rm(root2, { recursive: true, force: true }))
+  const botRoot2 = path.join(root2, 'workspace')
+  await mkdir(botRoot2, { recursive: true })
+  await writeFile(path.join(botRoot2, AGENTS_FILE), '# My custom notes\n')
+  await writeFile(path.join(botRoot2, PROTOCOL_FILE), 'team edition')
+  const third = await seedTeamOnboarding(botRoot2, { packageRoot })
+  assert.equal(third.protocolSeeded, false, 'team-modified protocol is never clobbered')
+  assert.equal(third.agentsUpdated, true)
+  assert.equal(third.agentsExisted, true)
+  const merged = await readFile(path.join(botRoot2, AGENTS_FILE), 'utf8')
+  assert.ok(merged.startsWith('# My custom notes'))
+  assert.equal(merged.match(new RegExp(ONBOARDING_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')).length, 1)
+  assert.equal(await readFile(path.join(botRoot2, PROTOCOL_FILE), 'utf8'), 'team edition')
 })

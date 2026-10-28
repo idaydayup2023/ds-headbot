@@ -1,6 +1,6 @@
 {
   "name": "ds-headbot",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "DSH plugin for DSH + ds-bot instance management and audited team communication.",
   "keywords": [
     "deepseek-harness",

@@ -350,7 +350,7 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  assert.equal(headbotVersion, '0.4.4')
+  assert.equal(headbotVersion, '0.4.5')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
   assert.throws(() => compareVersions('latest', '0.2.5'), /invalid stable release version/)

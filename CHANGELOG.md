@@ -2,6 +2,12 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.5] - 2026-10-28
+
+### Fixed
+
+- Use the controller LaunchAgent plist path when applying a default-instance model change, avoiding the macOS `launchctl bootout` I/O error that left the manager stuck restarting.
+
 ## [0.4.4] - 2026-10-26
 
 ### Added

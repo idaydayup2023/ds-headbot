@@ -2,6 +2,13 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.7] - 2026-10-28
+
+### Changed
+
+- Move team creation into the team instances card, revealed by a button beside refresh.
+- Paginate team communication audit records with 10 entries per page.
+
 ## [0.4.6] - 2026-10-28
 
 ### Changed

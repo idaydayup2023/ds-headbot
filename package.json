@@ -30,6 +30,7 @@
     "index.js",
     "cordis.patch.yml",
     "lib/*.js",
+    "lib/manager/*.js",
     "locale/*.json",
     "icon.svg",
     "docs/*.md",

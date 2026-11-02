@@ -2,6 +2,17 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [0.4.9] - 2026-11-02
+
+### Added
+
+- Run the root test suite and the Feishu bridge build and test on every push and pull request, and commit a root lockfile so that install is reproducible.
+
+### Changed
+
+- Split manager internals by domain — state and secrets, process lifecycle, models, Feishu provisioning, and controller restart — while keeping the public `HeadbotManager` API.
+- Stop loading the full audit journal into memory on startup and on each write. Hash-chain checks and the existing audit, export, inbox, and idempotent-send behavior stay the same.
+
 ## [0.4.8] - 2026-10-28
 
 ### Added

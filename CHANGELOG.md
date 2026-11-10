@@ -2,6 +2,15 @@
 
 All notable changes to DS Headbot are recorded here.
 
+## [Unreleased]
+
+## [0.4.10] - 2026-11-11
+
+### Added
+
+- Let the protected controller instance (the guarantee group, `default`) join its own audited team-communication circle as a first-class participant: it now carries a `0600` private bearer credential in `controller.json` (minted and persisted automatically for older files), appears in every roster, receives escalations from teams and can reply to them.
+- Give controller bots the same four `headbot_*` communication tools as managed teams through a shared registration module, wired in process to the audit broker with no HTTP hop, no environment-variable credential, and a file sandbox pinned to the controller's own bot workspace only.
+
 ## [0.4.9] - 2026-11-02
 
 ### Added

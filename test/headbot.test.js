@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { execFileSync } from 'node:child_process'
-import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { HeadbotManager } from '../lib/manager.js'
+import { AuditedCommunications } from '../lib/communications.js'
 import { apply as applyHeadbot, handleApiRequest, version as headbotVersion } from '../index.js'
 import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
 import { HeadbotReleaseUpdater, compareVersions, performHeadbotUpdate } from '../lib/release-updater.js'
 import { startIngress } from '../lib/ingress.js'
 import { runInNewContext } from 'node:vm'
-import { fixture, port, quiet } from './helpers.js'
+import { add, fixture, port, quiet } from './helpers.js'
 
 const apiPath = '/api/ds-headbot/v1'
 
@@ -82,7 +84,8 @@ test('HTTP admission separates browser management from team access and plugin to
     return { filesRoot, botFilesRoot, call: async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal })) }
   }
   const alpha = await toolsFor(a), beta = await toolsFor(b)
-  assert.equal((await alpha.call('headbot_list_teams')).teams[0].id, 'beta')
+  // The protected controller joins every roster as the default participant.
+  assert.deepEqual((await alpha.call('headbot_list_teams')).teams.map(team => team.id), ['default', 'beta'])
   await writeFile(path.join(alpha.botFilesRoot, 'report.txt'), 'bot workspace report')
   await writeFile(path.join(alpha.filesRoot, 'legacy.txt'), 'legacy workspace report')
   await writeFile(path.join(root, 'outside.txt'), 'private')
@@ -132,6 +135,8 @@ test('manager page shows the version updater and places teams before team creati
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))
+  const packageManifest = JSON.parse(await readFile(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'))
+  assert.equal(headbotVersion, packageManifest.version)
   assert.match(headbotVersion, /^\d+\.\d+\.\d+$/, 'headbotVersion must be a stable semver')
   assert.equal(compareVersions('0.2.5', '0.2.4'), 1)
   assert.equal(compareVersions('v0.2.5', '0.2.5'), 0)
@@ -526,4 +531,111 @@ test('team onboarding seeds protocol and AGENTS.md idempotently', async t => {
   assert.ok(merged.startsWith('# My custom notes'))
   assert.equal(merged.match(new RegExp(ONBOARDING_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')).length, 1)
   assert.equal(await readFile(path.join(botRoot2, PROTOCOL_FILE), 'utf8'), 'team edition')
+})
+
+test('controller joins the audited circle with its own identity, roster and send rules', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const controller = manager.controllerIdentity()
+  const broker = new AuditedCommunications(manager.root, manager)
+  const token = manager.controller.communicationToken
+  assert.match(token, /^[a-f0-9]{64}$/)
+  assert.deepEqual(await manager.authenticateTeam('Bearer ' + token), controller)
+  assert.equal(await manager.authenticateTeam('Bearer ' + '0'.repeat(64)), undefined)
+  assert.equal(JSON.stringify(await manager.listTeams()).includes(token), false)
+  assert.deepEqual((await broker.directory(a)).teams.map(team => team.id), ['default', 'beta'])
+  assert.deepEqual((await broker.directory(controller)).teams.map(team => team.id), ['alpha', 'beta'])
+  const bytes = Buffer.from('需要保障组处理')
+  const sent = await broker.send(a, { to: 'default', subject: '升级', text: '团队求助', requestId: randomUUID(), attachments: [{ name: 'evidence.txt', contentBase64: bytes.toString('base64') }] })
+  const received = await broker.inbox(controller)
+  assert.equal(received.messages.length, 1)
+  assert.equal(received.messages[0].from.id, 'alpha')
+  assert.deepEqual((await broker.attachment(controller, sent.message.messageId, sent.message.attachments[0].id)).bytes, bytes)
+  await broker.send(controller, { to: 'beta', text: '保障组回执', requestId: randomUUID() })
+  assert.deepEqual((await broker.inbox(b)).messages.map(message => message.text), ['保障组回执'])
+  await assert.rejects(broker.send(controller, { to: 'default', text: '自己发给自己', requestId: randomUUID() }), { statusCode: 400 })
+  const audit = await broker.exportAudit()
+  assert.equal(audit.integrity, 'verified')
+  assert.ok(audit.events.some(event => event.type === 'message.sent' && event.to.instanceId === 'controller'))
+})
+
+test('legacy controller metadata self-heals a private communication identity on load', async t => {
+  const { manager, root, fake } = await fixture(t)
+  await manager.listTeams()
+  const first = manager.controller.communicationToken
+  assert.match(first, /^[a-f0-9]{64}$/)
+  const document = JSON.parse(await readFile(manager.controllerFile, 'utf8'))
+  assert.equal(document.communicationToken, first)
+  assert.equal((await stat(manager.controllerFile)).mode & 0o777, 0o600)
+  delete document.communicationToken
+  delete document.instanceId
+  await writeFile(manager.controllerFile, JSON.stringify(document))
+  const reloaded = new HeadbotManager({ dataDir: manager.root, dshHome: path.join(root, 'home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port() }, { parentPort: await port(), logger: quiet })
+  t.after(() => reloaded.close())
+  await reloaded.listTeams()
+  const healed = reloaded.controller.communicationToken
+  assert.match(healed, /^[a-f0-9]{64}$/)
+  assert.notEqual(healed, first)
+  assert.equal(JSON.parse(await readFile(manager.controllerFile, 'utf8')).communicationToken, healed)
+  assert.equal((await stat(manager.controllerFile)).mode & 0o777, 0o600)
+  assert.equal((await reloaded.authenticateTeam('Bearer ' + healed)).instanceId, 'controller')
+})
+
+test('controller bots use the communication tools in process with the bot workspace as the only sandbox', async t => {
+  const { root, fake } = await fixture(t)
+  const routes = []
+  const server = createServer((req, res) => {
+    const route = routes.find(route => new URL(req.url, 'http://local').pathname.startsWith(route.path))
+    if (route) void route.handler(req, res)
+    else { res.writeHead(404); res.end() }
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections() }))
+  let dispose
+  const dataDir = path.join(root, 'ctl-headbot')
+  const dshHome = path.join(root, 'ctl-home')
+  const oldDshHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dshHome
+  t.after(() => { oldDshHome === undefined ? delete process.env.DSH_HOME : process.env.DSH_HOME = oldDshHome })
+  const tools = new Map()
+  applyHeadbot({
+    webServer: { host: '127.0.0.1', port: server.address().port, register(route) { routes.push(route); return () => routes.splice(routes.indexOf(route), 1) } },
+    connection: { requestRejection(req) { return req.headers['x-controller-session'] === 'test' ? undefined : 401 } },
+    tools: { register(tool) { tools.set(tool.name, tool) } },
+    logger: quiet, effect(callback) { dispose = callback() },
+  }, { dataDir, dshHome, dshCommand: fake, inheritModelSettings: false, ingressPort: await port() })
+  t.after(() => dispose())
+  const base = `http://127.0.0.1:${server.address().port}${apiPath}`
+  const admin = { 'x-controller-session': 'test', 'Content-Type': 'application/json' }
+  const created = await fetch(base + '/teams', { method: 'POST', headers: admin, body: JSON.stringify({ id: 'alpha', name: 'Alpha', port: await port(), autoStart: false }) })
+  assert.equal(created.status, 202)
+  const state = JSON.parse(await readFile(path.join(dataDir, 'teams.json'), 'utf8'))
+  const a = state.teams.find(team => team.id === 'alpha')
+  const call = async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal }))
+  const botWorkspace = path.join(dshHome, 'bot', 'workspace')
+  await mkdir(botWorkspace, { recursive: true })
+  assert.deepEqual((await call('headbot_list_teams')).teams.map(team => team.id), ['alpha'])
+  await writeFile(path.join(botWorkspace, 'ticket.log'), 'controller evidence')
+  await call('headbot_send_message', { to: 'alpha', text: '来自保障组', files: ['ticket.log'] })
+  const teamInbox = await fetch(base + '/comms/v1/inbox', { headers: { Authorization: 'Bearer ' + a.communicationToken } }).then(response => response.json())
+  assert.deepEqual(teamInbox.messages.map(message => message.from.id), ['default'])
+  const fileBytes = Buffer.from('需要基础设施支援')
+  const inbound = await fetch(base + '/comms/v1/messages', { method: 'POST', headers: { Authorization: 'Bearer ' + a.communicationToken, 'Content-Type': 'application/json' }, body: JSON.stringify({ to: 'default', text: '升级给保障组', requestId: randomUUID(), attachments: [{ name: 'need.txt', contentBase64: fileBytes.toString('base64') }] }) })
+  assert.equal(inbound.status, 201)
+  const inboundMessage = (await inbound.json()).message
+  assert.deepEqual((await call('headbot_receive_messages')).messages.map(message => message.text), ['升级给保障组'])
+  const downloaded = await call('headbot_download_attachment', { messageId: inboundMessage.messageId, attachmentId: inboundMessage.attachments[0].id })
+  assert.equal(await readFile(downloaded.path, 'utf8'), '需要基础设施支援')
+  assert.equal(path.dirname(path.dirname(downloaded.path)), botWorkspace)
+  await writeFile(path.join(dataDir, 'feishu-secrets.json'), 'must-never-be-readable')
+  await assert.rejects(call('headbot_send_message', { to: 'alpha', files: [path.join(dataDir, 'feishu-secrets.json')] }), /inside/)
+  await symlink(path.join(dataDir, 'feishu-secrets.json'), path.join(botWorkspace, 'sneaky.txt'))
+  await assert.rejects(call('headbot_send_message', { to: 'alpha', files: ['sneaky.txt'] }), /inside/)
+  await assert.rejects(call('headbot_send_message', { to: 'default', text: '自己发给自己' }), /different recipient/)
+  const controllerToken = JSON.parse(await readFile(path.join(dataDir, 'controller.json'), 'utf8')).communicationToken
+  assert.match(controllerToken, /^[a-f0-9]{64}$/)
+  assert.equal((await fetch(base + '/comms/v1/inbox', { headers: { Authorization: 'Bearer ' + controllerToken } })).status, 200)
+  assert.equal((await fetch(base + '/comms/v1/teams', { headers: { Authorization: 'Bearer ' + controllerToken } })).status, 200)
+  assert.equal((await fetch(base + '/audit', { headers: { Authorization: 'Bearer ' + controllerToken } })).status, 401)
 })

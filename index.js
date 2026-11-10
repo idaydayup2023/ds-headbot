@@ -1,16 +1,18 @@
 import { createRequire } from 'node:module'
+import path from 'node:path'
 import { HeadbotManager } from './lib/manager.js'
 import { startIngress } from './lib/ingress.js'
 import { renderManagerPage } from './lib/page.js'
 import { AuditedCommunications } from './lib/communications.js'
 import { HeadbotReleaseUpdater } from './lib/release-updater.js'
 import { HeadbotRuntimeUpdater } from './lib/runtime-updater.js'
+import { registerCommunicationTools } from './lib/team-plugin.js'
 
 const require = createRequire(import.meta.url)
 export const version = require('./package.json').version
 
 export const name = 'ds-headbot'
-export const inject = ['connection', 'webServer']
+export const inject = ['connection', 'webServer', 'tools']
 
 const API_PATH = '/api/ds-headbot/v1'
 const PAGE_PATH = '/manage'
@@ -37,6 +39,27 @@ export function apply(ctx, config = {}) {
   const runtimeUpdater = new HeadbotRuntimeUpdater({ manager, logger: ctx.logger, dshCommand: manager.dshCommand })
   const runtimeConfig = { ...config, publicHost: manager.publicHost, publicHosts: manager.publicHosts, version }
   const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
+
+  // The controller (protected default instance) is a first-class participant of its own audited
+  // circle. Its bots get the same four tools through the identical client-side validation, but
+  // the calls run in process against AuditedCommunications: no HTTP hop and the controller
+  // credential never enters an environment variable. The file sandbox is pinned to the
+  // controller's own bot workspace; the Headbot data directory (which holds the Feishu and
+  // model secret files) is never a readable root.
+  if (ctx.tools?.register) {
+    const actor = () => manager.controllerIdentity()
+    registerCommunicationTools(ctx, {
+      api: {
+        // The in-process broker is local and synchronous-to-disk; abort signals are meaningless here.
+        // attachment() must be called with exactly three arguments: the fourth is the reviewer override.
+        listTeams: () => communications.directory(actor()),
+        sendMessage: input => communications.send(actor(), input),
+        receiveMessages: (after, limit) => communications.inbox(actor(), after, limit),
+        fetchAttachment: (messageId, attachmentId) => communications.attachment(actor(), messageId, attachmentId),
+      },
+      botRoot: path.join(manager.parentHome, 'bot', 'workspace'),
+    })
+  }
 
   ctx.effect(() => {
     const pageRoute = ctx.webServer.register({

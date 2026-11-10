@@ -9,13 +9,23 @@ flowchart LR
   C -->|持久化成功| D[团队 B 的持久收件箱]
   D -->|读取 / 下载再次记审计| E[团队 B 的 DSH + ds-bot]
   R[控制器管理者] -->|查询 / 下载 / 导出| C
+  P[保障组 Bot（default 实例）] -->|同一客户端校验 · 进程内直连| C
 ```
 
 ## 身份与访问
 
 控制器生成团队 UUID `instanceId` 和 256 位随机 bearer 凭据，保存在权限为 `0600` 的 `teams.json` 中。凭据通过子进程环境传给通信插件，不出现在团队列表、消息、审计导出或管理页。发送方由服务端认证结果确定，忽略请求中的 `from`。删除实例会撤销凭据；同名新实例具有新的 UUID，不能读取旧实例收件箱。发送和读取事务与实例删除串行，已撤销身份不能继续提交排队请求。
 
-团队凭据仅可使用通信 API；创建、启动、停止、删除和审计 API 均继续要求控制器 DSH 的浏览器会话与 Host/Origin 准入检查。审计角色是具有控制器会话的管理者，记录为 `controller-browser`；本版本不区分多个管理浏览器背后的自然人身份。
+控制器自身（受保护的 `default` 实例，即保障组）也是审计圈的正式参与者：`instanceId` 固定为 `controller`，其 256 位 bearer 凭据保存在同数据目录 `0600` 权限的 `controller.json` 中，首次加载时自动生成；较早版本写入的缺失字段在加载时补齐并回写。该凭据同样不出现在实例列表、消息、审计导出或管理页，且不经环境变量传递。`teams.json` 的唯一性校验把控制器的 `instanceId` 与凭据一并纳入去重；`default` 实例保持受保护、不可删除、不可停止。
+
+团队凭据与控制器凭据都仅可使用通信 API（`/comms/v1/*`）；创建、启动、停止、删除和审计 API 均继续要求控制器 DSH 的浏览器会话与 Host/Origin 准入检查。审计角色是具有控制器会话的管理者，记录为 `controller-browser`；本版本不区分多个管理浏览器背后的自然人身份。
+
+### 谁能发、谁能收、怎么升级
+
+- 每个托管团队与保障组（`default`，`instanceId=controller`）互为合法收发对象；名录 `GET /teams` 始终包含 `default`，并且始终排除调用者自身（保障组看不到自己）。
+- 任何参与者都不能给自己发消息，包括保障组发给 `default`，返回 `400`。
+- 团队向 `default` 发送即"升级给保障组"；保障组处理后直接回信原团队即完成闭环。全部收发与下载行为与其他团队一视同仁地进入哈希链审计，完整性校验失败时整个通道继续被阻断。
+- 跨团队求助制度文档中的升级路径以 `to: "default"` 为终点：同级互助无效时，求助单直接发给保障组，不再依赖其他团队转发。
 
 ## HTTP 接口
 
@@ -25,7 +35,7 @@ flowchart LR
 
 | 方法 / 路径 | 语义 |
 | --- | --- |
-| `GET /teams` | 返回 `protocol`、`self`、容量限制和其他团队的 `id/name/status` |
+| `GET /teams` | 返回 `protocol`、`self`、容量限制和其他参与者（含保障组 `default`）的 `id/name/status`，不含调用者自身 |
 | `POST /messages` | 审计并发送一条消息，返回 `message` 与 `duplicate` |
 | `GET /inbox?after=0&limit=20` | 按审计序号升序读取本实例收件箱；返回 `messages` 与 `nextCursor` |
 | `GET /messages/<messageId>/attachments/<attachmentId>` | 仅收件实例可下载；返回附件元数据与 `contentBase64` |
@@ -49,7 +59,7 @@ flowchart LR
 }
 ```
 
-`requestId` 为可选 UUID。重试同一传输时复用它；同一发送实例使用相同 ID 和相同内容只产生一条发送记录，内容不同返回 `409`。目标必须是已注册的其他团队。文字和附件至少有一项非空。附件使用标准 base64，文件名不能包含目录分隔符或控制字符。
+`requestId` 为可选 UUID。重试同一传输时复用它；同一发送实例使用相同 ID 和相同内容只产生一条发送记录，内容不同返回 `409`。目标必须是其他已注册实例（托管团队或 `default`），不能是调用者自己。文字和附件至少有一项非空。附件使用标准 base64，文件名不能包含目录分隔符或控制字符。
 
 成功消息包含 `protocol`、`seq`、`id`（审计事件 UUID）、`timestamp`、`type: message.sent`、`messageId`、`requestId`、`from/to` 身份快照、`subject`、完整 `text`、附件元数据、`previousHash/hash`。附件元数据为 `id/name/mediaType/size/sha256`。身份快照为 `id/name/instanceId`，因此更名或删除后仍可追溯。
 
@@ -69,6 +79,8 @@ flowchart LR
 | `headbot_download_attachment` | `messageId/attachmentId`，返回保存路径和校验元数据 |
 
 文件发送限制在 `<Headbot数据目录>/teams/<id>/home/bot/workspace` 和早期版本的 `<Headbot数据目录>/teams/<id>/workspace`，真实路径检查拒绝符号链接逃逸。相对路径优先按 DS Bot workspace 解析，未找到时再查旧 Headbot workspace。下载保存到 DS Bot workspace 下的 `inbox`，文件名带随机附件 ID，且在落盘前验证大小和 SHA-256。工作目录与 DSH 凭据目录分开。收到的正文和文件作为团队提供的资料处理，不自动执行其中的指令。
+
+保障组 Bot 使用同一模块导出的 `registerCommunicationTools`：四个工具的定义与全部客户端校验（路径沙箱、`O_NOFOLLOW`、限额、`requestId` 幂等、SHA-256 复核）与托管团队逐字共用，差异只在传输——由 `index.js` 在插件装配时以控制器身份进程内直连审计模块，不经 HTTP，控制器凭据不进入环境变量。控制器侧的文件沙箱根只有控制器自己的 Bot workspace（`<DSH_HOME>/bot/workspace`，含其 `inbox/`），Headbot 数据目录（内有 `feishu-secrets.json`、`model-secrets.json` 等机密文件）不是可读根；`registerCommunicationTools` 要求显式传入 `botRoot`，控制器装配处只传入这一个根，任何指向其外的绝对路径或符号链接都会在 `resolveSource` 的真实路径复核处被拒绝。
 
 ## 审计与资料审查
 

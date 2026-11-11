@@ -4,11 +4,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { AuditedCommunications } from '../lib/communications.js'
-import { add, fixture } from './helpers.js'
+import { add, fixture, online } from './helpers.js'
 
-test('offline messages, binary attachments, safe retries and replay survive controller restart', async t => {
+test('delivered messages, binary attachments, safe retries and replay survive controller restart', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta'); await add(manager, 'gamma')
+  online(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta')), c = manager.identity(manager.findTeam('gamma'))
   const broker = new AuditedCommunications(manager.root, manager)
   const bytes = Buffer.from([0, 255, 10, 89])
@@ -38,6 +39,7 @@ test('offline messages, binary attachments, safe retries and replay survive cont
 test('audit failures block send, receive and file delivery; tampering is detected', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
   const broker = new AuditedCommunications(manager.root, manager)
   const append = broker.append
@@ -73,6 +75,7 @@ test('attachment filename and transfer limits are enforced before delivery', asy
 test('audit reads stay correct as the journal grows without retaining every event', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
   const broker = new AuditedCommunications(manager.root, manager)
   const input = { to: 'beta', requestId: randomUUID(), text: '字'.repeat(20000) }

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { AuditedCommunications } from '../lib/communications.js'
-import { InboxPusher, buildPushText, createSessionResolver, promptUrlFromLaunchUrl, signCookie, PUSH_TEXT_LIMIT } from '../lib/inbox-push.js'
+import { InboxPusher, buildPushText, createDeliverer, createSessionResolver, promptUrlFromLaunchUrl, signCookie, PUSH_TEXT_LIMIT } from '../lib/inbox-push.js'
 import { add, fixture, online, quiet } from './helpers.js'
 
 function wirePusher(broker, manager, deliver) {
@@ -170,4 +171,119 @@ test('push targets derive from the launch URL and the self-signed cookie carries
   assert.ok(body.expiresAt > body.issuedAt)
   assert.throws(() => signCookie('127.0.0.1:4321', 'not-base64url!!'))
   assert.throws(() => signCookie('127.0.0.1:4321', Buffer.alloc(16).toString('base64url')), /length/)
+})
+
+// ---- 总务纪律补测 (16:19 裁定) ----
+
+test('a self-send is refused outright, so the push path can never loop on itself', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha')
+  online(manager, 'alpha')
+  await seedLeadSession(manager, 'alpha', 'session-lead-a')
+  const a = manager.identity(manager.findTeam('alpha'))
+  const broker = new AuditedCommunications(manager.root, manager)
+  const calls = []
+  const pusher = wirePusher(broker, manager, async (target, text) => { calls.push({ target, text }); return 'accepted' })
+  await assert.rejects(broker.send(a, { to: 'alpha', requestId: randomUUID(), text: '自发件' }), { statusCode: 400, message: /choose a different recipient team/ })
+  await pusher.drain()
+  for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve))
+  // Same-instance sends never exist (platform guard), so nothing reached the journal or the pusher.
+  assert.deepEqual(calls, [])
+  const audit = await broker.exportAudit()
+  assert.deepEqual(audit.events.map(event => event.type), [])
+  assert.equal(audit.integrity, 'verified')
+})
+
+test('the controller resolves its own lead session from parentHome like any team', async t => {
+  const { manager } = await fixture(t)
+  await mkdir(path.join(manager.parentHome, 'bot'), { recursive: true })
+  await writeFile(path.join(manager.parentHome, 'bot', 'state.json'), JSON.stringify({ mainBotIds: ['session-controller-1'] }))
+  const target = await createSessionResolver({ manager })({ id: 'default' })
+  assert.equal(target.sessionId, 'session-controller-1')
+  assert.equal(target.home, manager.parentHome)
+})
+
+test('pushed, push-failed (HTTP 500 and timeout) and push-skipped all travel the append chain intact', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  await seedLeadSession(manager, 'beta', 'session-lead-9')
+  const home = path.join(manager.root, 'teams', 'beta', 'home')
+  await writeFile(path.join(home, '.credentials.yaml'), 'records:\n  "client-connection/browser-session":\n    kind: grant\n    payload:\n      secret: ' + Buffer.alloc(32, 9).toString('base64url') + '\n')
+  const listen = async handler => {
+    const server = createServer(handler)
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    t.after(() => new Promise(resolve => server.close(resolve)))
+    return server.address().port
+  }
+  const port500 = await listen((_req, res) => { res.statusCode = 500; res.end('boom') })
+  const portHang = await listen(() => { /* never answers: exercises the 3s budget branch */ })
+  const portOk = await listen((_req, res) => { res.end('{"ok":true,"payload":{"accepted":true}}') })
+  const beta = manager.identity(manager.findTeam('beta'))
+  const a = manager.identity(manager.findTeam('alpha'))
+  const broker = new AuditedCommunications(manager.root, manager)
+  // Real deliverer, stub manager so no launch URL interferes; short budget keeps the hang fast.
+  const deliverer = createDeliverer({ manager: { runtime: { get: () => ({}) } }, timeoutMs: 400, logger: quiet })
+  const pusher = wirePusher(broker, manager, deliverer)
+  // Four sends, each with its own push outcome, inbox reads interleaved between them so push
+  // markers and delivery markers land in one live transaction chain.
+  manager.findTeam('beta').port = port500
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '五百' })
+  await pusher.drain()
+  await broker.inbox(beta)
+  manager.findTeam('beta').port = portHang
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '挂起' })
+  await pusher.drain()
+  await broker.inbox(beta)
+  manager.findTeam('beta').port = portOk
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '成功' })
+  await pusher.drain()
+  await broker.inbox(beta)
+  await rm(path.join(home, 'bot', 'state.json'))
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '无会话' })
+  await pusher.drain()
+  await broker.inbox(beta)
+
+  const audit = await broker.exportAudit()
+  const types = audit.events.map(event => event.type)
+  assert.deepEqual(types.filter(type => type.startsWith('message.push')), ['message.push-failed', 'message.push-failed', 'message.pushed', 'message.push-skipped'])
+  const failed = audit.events.filter(event => event.type === 'message.push-failed')
+  assert.match(failed[0].reason, /HTTP 500/)
+  assert.match(failed[1].reason, /timeout after 400ms/)
+  assert.equal(audit.events.find(event => event.type === 'message.pushed').sessionId, 'session-lead-9')
+  assert.equal(audit.events.find(event => event.type === 'message.push-skipped').reason, 'no-session')
+  assert.equal(audit.integrity, 'verified')
+  // Independent chain walk over the raw journal: every hash recomputes, every link matches.
+  const lines = (await readFile(broker.journal, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(lines.length, audit.events.length)
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : (value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value)
+  let previous = null
+  lines.forEach((event, index) => {
+    const { hash, ...unsigned } = event
+    assert.equal(event.seq, index + 1)
+    assert.equal(hash, createHash('sha256').update(Buffer.from(JSON.stringify(canonical(unsigned)))).digest('hex'))
+    if (previous !== null) assert.equal(event.previousHash, previous)
+    previous = hash
+  })
+})
+
+test('a refused request keeps its refusal even after the recipient comes online', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha'))
+  const b = manager.identity(manager.findTeam('beta'))
+  const broker = new AuditedCommunications(manager.root, manager)
+  const input = { to: 'beta', requestId: randomUUID(), text: '离线时发的单' }
+  const first = await broker.send(a, input)
+  assert.equal(first.recipientOffline, true)
+  // The team comes back; the verdict for the same requestId must not flip to a delivery.
+  online(manager, 'beta')
+  const again = await broker.send(a, input)
+  assert.equal(again.recipientOffline, true)
+  assert.equal(again.duplicate, true)
+  assert.equal(again.message.seq, first.message.seq)
+  assert.equal(again.message.type, 'message.offline-rejected')
+  assert.deepEqual((await broker.inbox(b)).messages, [])
+  const audit = await broker.exportAudit()
+  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-rejected'])
 })

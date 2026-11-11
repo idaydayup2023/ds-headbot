@@ -4,6 +4,7 @@ import { HeadbotManager } from './lib/manager.js'
 import { startIngress } from './lib/ingress.js'
 import { renderManagerPage } from './lib/page.js'
 import { AuditedCommunications } from './lib/communications.js'
+import { InboxPusher, createSessionResolver, createDeliverer } from './lib/inbox-push.js'
 import { HeadbotReleaseUpdater } from './lib/release-updater.js'
 import { HeadbotRuntimeUpdater } from './lib/runtime-updater.js'
 import { registerCommunicationTools } from './lib/team-plugin.js'
@@ -39,6 +40,16 @@ export function apply(ctx, config = {}) {
   const runtimeUpdater = new HeadbotRuntimeUpdater({ manager, logger: ctx.logger, dshCommand: manager.dshCommand })
   const runtimeConfig = { ...config, publicHost: manager.publicHost, publicHosts: manager.publicHosts, version }
   const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
+  // Inbox push (INBOX-PUSH-001): online teams get their lead Bot session woken up the moment a
+  // message lands in the journal. Purely an optimization: the answer of send() and the durability
+  // of a message never depend on it, failures only leave an audit record, polling stays the fallback.
+  const inboxPusher = new InboxPusher({
+    appendEvent: (type, data) => communications.appendEvent(type, data),
+    resolveSession: createSessionResolver({ manager }),
+    deliver: createDeliverer({ manager, logger: ctx.logger }),
+    logger: ctx.logger ?? console,
+  })
+  communications.attachPusher(inboxPusher)
 
   // The controller (protected default instance) is a first-class participant of its own audited
   // circle. Its bots get the same four tools through the identical client-side validation, but
@@ -129,6 +140,9 @@ export function apply(ctx, config = {}) {
     return async () => {
       pageRoute()
       apiRoute()
+      // Give in-flight pushes their bounded window to finish; each push already has its own
+      // 3s budget, so this cannot delay shutdown beyond one in-flight attempt.
+      await inboxPusher.drain()
       await ingress.close()
       await manager.close()
     }

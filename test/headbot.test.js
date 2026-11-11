@@ -14,7 +14,7 @@ import { renderManagerPage } from '../lib/page.js'
 import { HeadbotReleaseUpdater, compareVersions, performHeadbotUpdate } from '../lib/release-updater.js'
 import { startIngress } from '../lib/ingress.js'
 import { runInNewContext } from 'node:vm'
-import { add, fixture, port, quiet } from './helpers.js'
+import { add, fixture, online, port, quiet } from './helpers.js'
 
 const apiPath = '/api/ds-headbot/v1'
 
@@ -84,6 +84,17 @@ test('HTTP admission separates browser management from team access and plugin to
     return { filesRoot, botFilesRoot, call: async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal })) }
   }
   const alpha = await toolsFor(a), beta = await toolsFor(b)
+  // Reachability rule (INBOX-PUSH-001): an offline team is answered "not online" without
+  // queueing, so Beta has to genuinely run for the file exchange below to deliver.
+  await fetch(`${base}/teams/beta/start`, { method: 'POST', headers: admin })
+  let betaStatus
+  for (let i = 0; i < 200; i++) {
+    const listed = await fetch(base + '/teams', { headers: admin }).then(response => response.json())
+    betaStatus = listed.teams.find(team => team.id === 'beta')?.status
+    if (betaStatus === 'running') break
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  assert.equal(betaStatus, 'running')
   // The protected controller joins every roster as the default participant.
   assert.deepEqual((await alpha.call('headbot_list_teams')).teams.map(team => team.id), ['default', 'beta'])
   await writeFile(path.join(alpha.botFilesRoot, 'report.txt'), 'bot workspace report')
@@ -102,7 +113,9 @@ test('HTTP admission separates browser management from team access and plugin to
   const reviewed = await fetch(base + '/audit/messages/' + sent.message.messageId + '/attachments/' + sent.message.attachments[0].id, { headers: admin })
   assert.equal(await reviewed.text(), 'bot workspace report')
   const exported = await fetch(base + '/audit/export', { headers: admin }).then(response => response.json())
-  assert.deepEqual(exported.events.map(event => event.type), ['message.sent', 'message.sent', 'messages.received', 'attachment.received', 'attachment.reviewed'])
+  // The real pusher is wired in applyHeadbot: Beta has no lead session seeded, so each delivered
+  // message is followed by its push-skipped(no-session) marker — delivery semantics unaffected.
+  assert.deepEqual(exported.events.map(event => event.type), ['message.sent', 'message.push-skipped', 'message.sent', 'message.push-skipped', 'messages.received', 'attachment.received', 'attachment.reviewed'])
   const deletion = await fetch(base + '/teams/beta', { method: 'DELETE', headers: admin })
   assert.equal(deletion.status, 200)
   assert.equal((await fetch(base + '/comms/v1/inbox', { headers: { Authorization: 'Bearer ' + b.communicationToken } })).status, 401)
@@ -536,6 +549,7 @@ test('team onboarding seeds protocol and AGENTS.md idempotently', async t => {
 test('controller joins the audited circle with its own identity, roster and send rules', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
   const controller = manager.controllerIdentity()
   const broker = new AuditedCommunications(manager.root, manager)
@@ -612,6 +626,17 @@ test('controller bots use the communication tools in process with the bot worksp
   assert.equal(created.status, 202)
   const state = JSON.parse(await readFile(path.join(dataDir, 'teams.json'), 'utf8'))
   const a = state.teams.find(team => team.id === 'alpha')
+  // Reachability rule (INBOX-PUSH-001): an offline team is answered without queueing, so this
+  // scenario must genuinely bring Alpha up — the fake dsh binary carries its phase to running.
+  await fetch(`${base}/teams/alpha/start`, { method: 'POST', headers: admin })
+  let alphaStatus
+  for (let i = 0; i < 200; i++) {
+    const listed = await fetch(base + '/teams', { headers: admin }).then(response => response.json())
+    alphaStatus = listed.teams.find(team => team.id === 'alpha')?.status
+    if (alphaStatus === 'running') break
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  assert.equal(alphaStatus, 'running')
   const call = async (name, args = {}) => JSON.parse(await tools.get(name).execute(args, { signal: new AbortController().signal }))
   const botWorkspace = path.join(dshHome, 'bot', 'workspace')
   await mkdir(botWorkspace, { recursive: true })

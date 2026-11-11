@@ -35,3 +35,9 @@ console.log('dsh web: '+value('--public-url')+'?token=test-secret');`)
 export async function add(manager, id) {
   return manager.createTeam({ id, name: id.toUpperCase(), port: await port(), autoStart: false })
 }
+
+// Bring a team's runtime to the phase the platform reads for reachability (INBOX-PUSH-001).
+// Teams created by add() stay 'stopped' — that is the offline state the rule answers with.
+export function online(manager, ...ids) {
+  for (const id of ids) manager.runtime.set(id, { ...(manager.runtime.get(id) ?? {}), phase: 'running' })
+}

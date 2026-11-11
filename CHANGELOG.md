@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-11-11
+
+### Fixed
+
+- Carry a catalog model's `maxTokens` through to the generated Web profile patch: `writeInstanceModelConfig` used to emit bare `{ id }` entries, so every assigned model silently fell back to the client default budget. The catalog validator now preserves a positive-integer `maxTokens`, the controller model import reads it back from the patch entry, and it is part of the runtime signature so catalog edits propagate to assigned teams.
+
 ## [0.4.10] - 2026-11-11
 
 ### Added

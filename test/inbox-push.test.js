@@ -77,15 +77,21 @@ test('a delivered send never waits for the push and audits message.pushed with t
   let release
   const gate = new Promise(resolve => { release = resolve })
   const calls = []
+  let noteDispatch
+  const dispatched = new Promise(resolve => { noteDispatch = resolve })
   const pusher = wirePusher(broker, manager, async (target, text, message) => {
     calls.push({ target, text, message })
+    noteDispatch()
     await gate
     return 'accepted'
   })
   const sent = await broker.send(a, { to: 'beta', subject: '升级窗口', requestId: randomUUID(), text: '今夜 02:10 执行' })
   assert.equal(sent.delivered, true)
   // The push is still parked behind the gate: send() answered anyway, and the message is durable.
-  for (let i = 0; i < 200 && !calls.length; i++) await new Promise(resolve => setImmediate(resolve))
+  // Event-driven wait (fixes the shared-runner flake of the old 200×setImmediate budget): resolve
+  // the moment the dispatch lands; a 5s ceiling bounds the wait. If the ceiling expires without a
+  // dispatch the unchanged assertion below still fails red — a real regression still fails.
+  await Promise.race([dispatched, new Promise(resolve => { const timer = setTimeout(resolve, 5_000); timer.unref?.() })])
   assert.equal(calls.length, 1)
   assert.deepEqual((await broker.inbox(manager.identity(manager.findTeam('beta')))).messages.map(m => m.text), ['今夜 02:10 执行'])
   release()

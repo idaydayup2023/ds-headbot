@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-11-14
+
+### Added
+
+- Add an audited LiteLLM version card and upgrade flow for the shared 8888 inference gateway (LITELLM-UPGRADE-UI-001): the manager page now shows the installed venv version against the upstream `BerriAI/litellm` release (rate-limited reads are reported honestly), and upgrades run only behind a double confirmation that re-types the target version and acknowledges the restart outage. A patch-manifest gate fails closed — an absent or drifted manifest blocks the run unless an explicit zero-patch declaration is on file — so an upgrade can never silently eat local patches. The worker backs up `pip freeze`, installs the pinned version without stopping the gateway, restarts via `launchctl kickstart`, verifies version/health/patch in three checks, auto-rolls back to the pinned version on failure, and appends every attempt to `litellm-upgrade-audit.jsonl` with progress in `litellm-update.log`.
+
 ## [0.4.12] - 2026-11-11
 
 ### Fixed

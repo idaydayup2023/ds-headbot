@@ -7,6 +7,7 @@ import { AuditedCommunications } from './lib/communications.js'
 import { InboxPusher, createSessionResolver, createDeliverer } from './lib/inbox-push.js'
 import { HeadbotReleaseUpdater } from './lib/release-updater.js'
 import { HeadbotRuntimeUpdater } from './lib/runtime-updater.js'
+import { LitellmGatewayUpdater } from './lib/litellm-updater.js'
 import { registerCommunicationTools } from './lib/team-plugin.js'
 
 const require = createRequire(import.meta.url)
@@ -38,6 +39,12 @@ export function apply(ctx, config = {}) {
     dshCommand: manager.dshCommand,
   })
   const runtimeUpdater = new HeadbotRuntimeUpdater({ manager, logger: ctx.logger, dshCommand: manager.dshCommand })
+  // LITELLM-UPGRADE-UI-001: version card + audited upgrade for the shared 8888 inference gateway.
+  // Degrades to a read-only "cannot read" card on machines without the gateway; set
+  // config.litellmUpdate.enabled === false to hide the routes entirely.
+  const litellmUpdater = config.litellmUpdate?.enabled === false
+    ? undefined
+    : new LitellmGatewayUpdater({ manager, logger: ctx.logger, config: config.litellmUpdate })
   const runtimeConfig = { ...config, publicHost: manager.publicHost, publicHosts: manager.publicHosts, version }
   const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
   // Inbox push (INBOX-PUSH-001): online teams get their lead Bot session woken up the moment a
@@ -104,7 +111,7 @@ export function apply(ctx, config = {}) {
           try {
             const actor = await manager.authenticateTeam(req.headers.authorization)
             if (!actor) return json(res, 401, { error: 'invalid or revoked team credential' })
-            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor, releaseUpdater, runtimeUpdater)
+            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater)
           } catch (error) {
             return json(res, error.statusCode ?? 503, { error: error.message })
           }
@@ -115,7 +122,7 @@ export function apply(ctx, config = {}) {
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
           return
         }
-        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater, runtimeUpdater)
+        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater, runtimeUpdater, litellmUpdater)
       },
     })
 
@@ -149,7 +156,7 @@ export function apply(ctx, config = {}) {
   }, 'ds-headbot: manager and team processes')
 }
 
-export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor, releaseUpdater, runtimeUpdater) {
+export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater) {
   const url = new URL(req.url ?? '/', 'http://headbot.local')
   const route = url.pathname.slice(API_PATH.length) || '/'
   const method = req.method ?? 'GET'
@@ -172,6 +179,18 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     if (method === 'POST' && route === '/runtime-versions/dsh/upgrade') {
       if (!runtimeUpdater) return json(res, 503, { error: 'runtime version updater unavailable' })
       return json(res, 202, await runtimeUpdater.startDshUpgrade())
+    }
+    if (method === 'GET' && route === '/litellm') {
+      if (!litellmUpdater) return json(res, 503, { error: 'litellm updater unavailable' })
+      return json(res, 200, await litellmUpdater.check({ force: url.searchParams.get('refresh') === '1' }))
+    }
+    if (method === 'POST' && route === '/litellm/upgrade') {
+      if (!litellmUpdater) return json(res, 503, { error: 'litellm updater unavailable' })
+      return json(res, 202, await litellmUpdater.startUpgrade(await readJson(req, 4096), actor))
+    }
+    if (method === 'GET' && route === '/litellm/audit') {
+      if (!litellmUpdater) return json(res, 503, { error: 'litellm updater unavailable' })
+      return json(res, 200, { items: await litellmUpdater.recentAudit(url.searchParams.get('limit')), progress: await litellmUpdater.readProgressTail() })
     }
     if (actor) {
       if (method === 'GET' && route === '/comms/v1/teams') return json(res, 200, await communications.directory(actor))

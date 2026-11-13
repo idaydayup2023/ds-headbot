@@ -112,6 +112,8 @@ test('patch gate passes a matching baseline and blocks drifted files or missing 
 test('startUpgrade requires the outage acknowledgement, the exact target, and a passing gate', async () => {
   const root = await tempDir('guards')
   const updater = makeUpdater({ root, fetchImpl: githubRelease(), patchManifest: path.join(root, 'missing.manifest.json') })
+  // 平台无关：launchd 重启能力在 CI(linux) 上恒假，本案测的是双确认/目标对表/闸门三道闸，覆写之
+  updater.canRestart = () => true
   await assert.rejects(() => updater.startUpgrade({ targetVersion: '1.107.0-stable' }), /二次确认/)
   await assert.rejects(() => updater.startUpgrade({ acknowledgeOutage: true, targetVersion: '1.107.0' }), /目标版本/)
   await assert.rejects(() => updater.startUpgrade({ acknowledgeOutage: true, targetVersion: '1.107.0-stable' }), /补丁闸门未通过/)

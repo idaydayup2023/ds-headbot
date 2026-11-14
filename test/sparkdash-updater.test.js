@@ -256,6 +256,51 @@ test('REPO-WATCH ledger cross-check: mismatch defers to the live ls-remote readi
   assert.match(missing.note, /以 UI 实测/)
 })
 
+test('ledger reader is repo-aware over the human 台账.md (B⑤): baseline-table row wins, litellm/short SHAs ignored', async () => {
+  const root = await tempDir('ledger-repo')
+  const ledgerFile = path.join(root, '台账.md')
+  const LITELLM_SHA = 'c'.repeat(40)
+  const SPARK_SHA = 'e'.repeat(40)
+  await writeFile(ledgerFile, [
+    '| # | 仓库 | HEAD sha | 末 commit 时刻 | 落位 |',
+    '|---|---|---|---|---|',
+    `| 1 | MiaAI-Lab/sparkDash | \`${SPARK_SHA}\` | 2026-11-12T02:00:19+02:00 | spark0 |`,
+    `| BerriAI/litellm | \`${LITELLM_SHA}\` | venv pip 1.106.2 | litellm_load |`,
+    '| 2026-11-14 午 | litellm 上游 MOVED：abc1234→def5678；余四仓 SAME（sparkDash 24daeb57 双源同刻验） | 例行 | 注记 |',
+  ].join('\n'))
+  const reading = await readLedgerReading(ledgerFile, 'https://github.com/MiaAI-Lab/sparkDash.git')
+  assert.equal(reading.head, SPARK_SHA, 'the sparkDash baseline row must win over the newer litellm row')
+  assert.match(reading.raw, /sparkDash/)
+  // even when the newest row lacks a full sparkDash SHA the baseline row keeps the cross-check alive
+  const updater = makeUpdater({ head: 'a'.repeat(40), upstream: SPARK_SHA, behind: '1' }, { root, config: { localDir: '/fake/sparkdash-checkout', ledgerFile } })
+  const status = await updater.check()
+  assert.equal(status.ledger.head, SPARK_SHA)
+  assert.ok(!status.notes.some(note => /不一致/.test(note)), 'aligned readings must not add a mismatch note')
+})
+
+test('string runbook steps (B④ 照抄即用) run via /bin/sh with <target_sha>/<previous_sha> filled', async () => {
+  const root = await tempDir('string-plan')
+  const B4_PLAN = {
+    steps: [
+      'git -C ~/ai/sparkDash fetch origin main',
+      'git -C ~/ai/sparkDash merge --ff-only origin/main',
+      'npm --prefix ~/ai/sparkDash ci',
+      'launchctl kickstart -k gui/$(id -u)/com.daibo.sparkdash',
+    ],
+    verify: ['test "$(git -C ~/ai/sparkDash rev-parse HEAD)" = <target_sha>'],
+    rollback: ['git -C ~/ai/sparkDash checkout <previous_sha>', 'launchctl kickstart -k gui/$(id -u)/com.daibo.sparkdash'],
+  }
+  assert.ok(parseUpgradePlan(B4_PLAN), 'the B④ shape must parse verbatim')
+  assert.equal(parseUpgradePlan({ steps: ['   '] }), null, 'a blank shell line is still invalid')
+  const runner = workerRunner({ finalHead: B, rollbackHead: A })
+  await performSparkdashUpgrade(await workerConfig(root, B4_PLAN), { runCommand: runner })
+  const shCalls = runner.calls.filter(call => call[0] === '/bin/sh' && call[1] === '-c')
+  assert.ok(shCalls.some(call => call[2].includes('npm --prefix ~/ai/sparkDash ci')))
+  assert.ok(shCalls.some(call => call[2] === `test "$(git -C ~/ai/sparkDash rev-parse HEAD)" = ${B}`), '<target_sha> must be filled with the pinned target')
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'completed')
+})
+
 function workerRunner({ stepFailAt = -1, finalHead, rollbackHead, dirtyBefore = '' } = {}) {
   const calls = []
   let rolled = false
@@ -275,7 +320,7 @@ function workerRunner({ stepFailAt = -1, finalHead, rollbackHead, dirtyBefore = 
       stepIndex += 1
       return { stdout: '', stderr: '' }
     }
-    if (command === '/bin/launchctl' || command === '/usr/bin/true') return { stdout: '', stderr: '' }
+    if (command === '/bin/launchctl' || command === '/usr/bin/true' || command === '/bin/sh') return { stdout: '', stderr: '' }
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }, { calls })
 }

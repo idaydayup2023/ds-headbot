@@ -22,7 +22,15 @@ function makeGit(scenario) {
     if (command !== 'git') throw new Error(`unexpected command ${command}`)
     if (args[0] === 'ls-remote') {
       if (scenario.lsRemoteThrows) throw new Error(scenario.lsRemoteThrows)
+      if (String(args[2] || '').startsWith('refs/tags')) {
+        return { stdout: scenario.upstreamTags ?? (scenario.upstreamTag ? `${scenario.upstream}\trefs/tags/${scenario.upstreamTag}\n` : ''), stderr: '' }
+      }
       return { stdout: `${scenario.upstream}\tHEAD\n${scenario.upstream}\trefs/heads/${scenario.branch || 'main'}\n`, stderr: '' }
+    }
+    if (args[0] === 'describe') {
+      // --exact-match semantics: only a tag ON the commit answers; anything else exits non-zero.
+      if (scenario.localTag) return { stdout: `${scenario.localTag}\n`, stderr: '' }
+      throw new Error('fatal: no tag exactly matches')
     }
     if (args[0] === 'rev-parse') {
       if (scenario.revParseThrows) throw new Error(scenario.revParseThrows)
@@ -191,7 +199,7 @@ test('pre-install window: configured-but-missing localDir still reads upstream H
   const runImpl = async (command, args, opts) => {
     probes.push({ args: [...args], cwd: opts?.cwd })
     if (command !== 'git') throw new Error(`unexpected command ${command}`)
-    if (args[0] === 'ls-remote') return { stdout: `${B}\trefs/heads/main\n`, stderr: '' }
+    if (args[0] === 'ls-remote') return { stdout: args[2] && String(args[2]).startsWith('refs/tags') ? `${B}\trefs/tags/v2.90.0\n` : `${B}\trefs/heads/main\n`, stderr: '' }
     // Every local probe would die exactly like the real window: spawn into a void cwd.
     throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' })
   }
@@ -205,8 +213,10 @@ test('pre-install window: configured-but-missing localDir still reads upstream H
   // ① 上游照读：探针与缺失的 checkout 解耦，且 provably 钉在中性 cwd 上。
   assert.equal(status.upstreamHead, B, 'upstreamHead 照读——ls-remote 不得吃缺失的 localDir 当 cwd')
   assert.equal(status.upstreamError, null)
-  assert.deepEqual(probes.map(p => p.args[0]), ['ls-remote'], '目录不存在时不得向本地 git 探针 spawn')
-  assert.equal(probes[0].cwd, process.cwd(), '上游探针钉中性 cwd')
+  assert.deepEqual(probes.map(p => p.args[0]), ['ls-remote', 'ls-remote'], '目录不存在时只许上游 ls-remote 双探针（HEAD+tags），本地 git 探针一枚不发')
+  assert.deepEqual(probes.map(p => p.args[2]), ['HEAD', 'refs/tags/*'])
+  for (const probe of probes) assert.equal(probe.cwd, process.cwd(), '上游探针钉中性 cwd')
+  assert.equal(status.upstreamTagVersion, 'v2.90.0', 'tag 语义映射不依赖本地 checkout')
   // ② gate 回归干净「未部署」文案，ENOENT 假象绝迹。
   assert.equal(status.deployed, false)
   assert.equal(status.localError, null)
@@ -431,4 +441,27 @@ test('worker HEAD read-back mismatch counts as failure, not a completed lie', as
   assert.match(audit[0].reason, /HEAD 回读不符/)
   assert.equal(audit[0].rolledBack, true)
   process.exitCode = 0
+})
+
+// UI-006（2026-11-15 用户令）：SparkDash 卡面版本=tag 版本号（v2.90.0 现势）。三态如实：
+// ① HEAD 带 tag → localTagVersion 直读；② HEAD 与上游 HEAD 一致但本地 describe 失败 → 继承
+// 上游 tag（同一发布映射，非造假——两 sha 逐字等值已证）；③ 无 tag → null，页面诚实「未标记」。
+test('UI-006 tag version: describe exact-match locally, ls-remote mapping upstream, honest untagged', async () => {
+  const root = await tempDir('tags')
+  const tagged = makeUpdater({ head: A, upstream: B, behind: '1', upstreamTag: 'v2.90.0', localTag: 'v2.89.0' }, { root, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const status = await tagged.check()
+  assert.equal(status.localTagVersion, 'v2.89.0', '本地 tag=describe --tags --exact-match 直读')
+  assert.equal(status.upstreamTagVersion, 'v2.90.0', '上游 tag=ls-remote refs/tags/* 对 HEAD 的映射')
+
+  const sameRoot = await tempDir('tags-same')
+  const same = makeUpdater({ head: B, upstream: B, upstreamTag: 'v2.90.0' }, { root: sameRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const sameStatus = await same.check()
+  assert.equal(sameStatus.upToDate, true)
+  assert.equal(sameStatus.localTagVersion, 'v2.90.0', 'HEAD 逐字等值时继承上游 tag（同一发布映射）')
+
+  const bareRoot = await tempDir('tags-bare')
+  const bare = makeUpdater({ head: A, upstream: B, behind: '1' }, { root: bareRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const bareStatus = await bare.check()
+  assert.equal(bareStatus.localTagVersion, null, '无 tag 不造假版本')
+  assert.equal(bareStatus.upstreamTagVersion, null)
 })

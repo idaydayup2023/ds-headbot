@@ -125,10 +125,11 @@ test('manager page shows the version updater and places teams before team creati
   const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh', version: '0.2.5' })
   assert.match(html, /创建团队/)
   assert.doesNotMatch(html, /添加团队副本/)
-  assert.match(html, /dsBot\.latestVersion\?'升级'/)
-  assert.match(html, /当前版本：v0\.2\.5/)
-  assert.match(html, /id="latest-version"/)
-  assert.match(html, /id="upgrade-headbot"/)
+  assert.match(html, /label:'升级中'/)
+  assert.match(html, /label:'升级到 v'\+\(dsBotLatest/)
+  assert.match(html, /安装版本：v0\.2\.5/)
+  assert.match(html, /id="headbot-version"/)
+  assert.match(html, /id="upgrade-headbot-slot"/)
   assert.match(html, /button\.update-ready/)
   assert.ok(html.indexOf('<h2>团队实例</h2>') < html.indexOf('id="add-form"'))
   assert.match(html, /call\('\/release\/upgrade'/)
@@ -369,7 +370,7 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
     return {
       key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
-      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
       querySelector() { return null },
     }
@@ -396,22 +397,19 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  const upgradeButton = elements.get('#upgrade-headbot')
-  assert.equal(upgradeButton.disabled, false)
-  assert.equal(upgradeButton.textContent, '升级到 v0.2.7')
-  assert.equal(upgradeButton.classList.contains('update-ready'), true)
+  const slot = elements.get('#upgrade-headbot-slot')
+  const upgradeButton = () => slot.children.find(child => child.id === 'upgrade-headbot')
+  assert.ok(upgradeButton(), 'a newer release must render the button node')
+  assert.equal(upgradeButton().disabled, false)
+  assert.equal(upgradeButton().textContent, '升级到 v0.2.7')
+  assert.equal(upgradeButton().classList.contains('update-ready'), true)
 
-  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
-  await click('#upgrade-headbot')
-  assert.equal(elements.get('#headbot-confirm').hidden, false, 'the always-clickable button opens the dialog')
-  assert.equal(upgradeRequests, 0, 'the card button alone must not start an upgrade')
-  // UI-004: the HTML ships this button `disabled` — the ready state must lift it, otherwise the
-  // click helper below short-circuits like a real browser and upgradeRequests stays 0.
-  assert.equal(elements.get('#headbot-confirm-upgrade').disabled, false, 'UI-004: ready state must lift the HTML initial disabled')
-  await click('#headbot-confirm-upgrade')
-  assert.equal(upgradeRequests, 1)
-  assert.equal(upgradeButton.disabled, true)
-  assert.equal(upgradeButton.textContent, '正在升级…')
+  const click = async id => { const btn = upgradeButton(); if (!btn || btn.disabled) return false; const h = handlers.get(`${id}:click`); if (!h) return false; await h({}); return true }
+  // UI-006 one-step: the button press itself executes the upgrade — no confirm dialog exists any more.
+  assert.equal(await click('upgrade-headbot'), true, 'the enabled button must accept the press')
+  assert.equal(upgradeRequests, 1, 'the press itself is the execution (UI-006 one-step)')
+  assert.equal(upgradeButton().disabled, true)
+  assert.equal(upgradeButton().textContent, '升级中')
 })
 
 test('browser keeps DSH upgrade visible while the service restarts and reports completion', async () => {
@@ -422,7 +420,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
     return {
       key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
-      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
       querySelector() { return null },
     }
@@ -461,15 +459,14 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
-  const upgradeButton = elements.get('#upgrade-dsh')
-  assert.equal(upgradeButton.disabled, false)
-  await click('#upgrade-dsh')
-  assert.equal(elements.get('#dsh-confirm').hidden, false, 'the always-clickable button opens the dialog')
-  // UI-004: same grey-button contract on the DSH card.
-  assert.equal(elements.get('#dsh-confirm-upgrade').disabled, false, 'UI-004: ready state must lift the HTML initial disabled')
-  await click('#dsh-confirm-upgrade')
-  assert.equal(upgradeButton.textContent, '正在升级…')
+  const dshSlot = elements.get('#upgrade-dsh-slot')
+  const dshButton = () => dshSlot.children.find(child => child.id === 'upgrade-dsh')
+  const click = async id => { const btn = dshButton(); if (!btn || btn.disabled) return false; const h = handlers.get(`${id}:click`); if (!h) return false; await h({}); return true }
+  assert.ok(dshButton(), 'an available DSH update must render the button node')
+  assert.equal(dshButton().disabled, false)
+  // UI-006 one-step: pressing 升级到 v0.2.1-rc.3 executes directly (no dialog leg any more).
+  await click('upgrade-dsh')
+  assert.equal(dshButton().textContent, '升级中')
   assert.ok([...timers.values()].some(timer => timer.delay === 2500), 'busy state schedules a quick status poll')
 
   updateState = 'restarting'
@@ -479,7 +476,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   await new Promise(resolve => setImmediate(resolve))
   await pollPromise
   assert.equal(elements.get('#dsh-block').textContent, 'DSH 正在重启，页面会自动重新连接并检查升级结果。')
-  assert.equal(upgradeButton.disabled, true)
+  assert.equal(dshButton().disabled, true, 'while restarting the button must stay rendered as 升级中')
 
   updateState = 'completed'
   const retry = [...timers.entries()].find(([,timer]) => timer.delay === 2500)
@@ -488,90 +485,113 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   pollPromise = retry[1].callback()
   await new Promise(resolve => setImmediate(resolve))
   await pollPromise
-  assert.equal(elements.get('#current-dsh-version').textContent, '当前版本：v0.2.1-rc.3')
-  assert.equal(elements.get('#dsh-block').textContent, '已升级到 0.2.1-rc.3')
-  assert.equal(upgradeButton.textContent, '已是最新')
+  assert.equal(elements.get('#dsh-version').textContent, '安装版本：v0.2.1-rc.3')
+  assert.equal(elements.get('#dsh-block').textContent, '')
+  // UI-006 ③: success removes the node entirely — 不是 hidden，DOM 无节点.
+  assert.equal(dshButton(), undefined, '升级成功后按钮节点必须从 DOM 移除')
 })
 
-// UI-004 验收口径：三卡（headbot/dsh/dsbot）弹框确认钮在 HTML 里带初值 disabled，
-// ready 态开框后必须由 render* 显式解禁（disabled===false），blocked 态则恒 true 且框照开。
-test('UI-004: ready-state confirm buttons must lift the HTML initial disabled on all three cards', async () => {
-  const elements = new Map(), handlers = new Map()
-  function element(key = 'created') {
-    const classes = new Set()
-    return {
-      key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
-      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
-      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
-      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
-      querySelector() { return null },
-    }
-  }
-  const document = {
-    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
-    createElement(tag) { return element(tag) },
-  }
-  const source = renderManagerPage({ version: '0.4.17' }).match(/<script>([\s\S]*?)<\/script>/)[1]
-  runInNewContext(source, {
-    document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
-    FormData: class { constructor() {} get() { return '' } },
-    async fetch(url) {
-      let data = { teams: [] }
-      if (url.includes('/release')) data = { currentVersion: '0.4.17', latestVersion: '0.4.18', updateAvailable: true, state: 'idle' }
-      else if (url.includes('/runtime-versions')) data = {
-        dsh: { currentVersion: '0.2.2-rc.3', latestVersion: '0.2.3-rc.1', updateAvailable: true, canUpdate: true, state: 'idle' },
-        dsBot: { instances: [{ currentVersion: '0.1.6', status: 'running' }], latestVersion: '0.1.7', updateAvailable: true },
-      }
-      else if (url.includes('/models')) data = { models: [] }
-      else if (url.includes('/audit')) data = { events: [] }
-      return { status: 200, ok: true, async json() { return data } }
-    },
-  })
-  await new Promise(resolve => setImmediate(resolve))
-  await new Promise(resolve => setImmediate(resolve))
-  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
-  // The HTML ships these three confirm buttons `disabled` — assert the seed itself (the page
-  // script has already run by now, so element state reflects the render, not the initial markup).
-  assert.equal(htmlSeed('#headbot-confirm-upgrade').disabled, true, 'sanity: HTML initial value is disabled')
-  assert.equal(htmlSeed('#dsh-confirm-upgrade').disabled, true)
-  assert.equal(htmlSeed('#dsbot-confirm-upgrade').disabled, true)
-  await click('#upgrade-headbot')
-  await click('#upgrade-dsh')
-  await click('#update-all')
-  assert.equal(elements.get('#headbot-confirm').hidden, false)
-  assert.equal(elements.get('#dsh-confirm').hidden, false)
-  assert.equal(elements.get('#dsbot-confirm').hidden, false)
-  assert.equal(elements.get('#headbot-confirm-upgrade').disabled, false, 'headbot ready → the confirm button must be clickable')
-  assert.equal(elements.get('#dsh-confirm-upgrade').disabled, false, 'dsh ready → the confirm button must be clickable')
-  assert.equal(elements.get('#dsbot-confirm-upgrade').disabled, false, 'dsbot ready → the confirm button must be clickable')
-})
-
-test('UI-002: version cards keep only three elements; details live in the confirm dialog', () => {
+// UI-006 (2026-11-15 用户令)：卡面只留组件名+「安装版本：xxxx」一行+升级钮；组件名五枚逐字；
+// 升级钮全生命周期——无新版 DOM 无节点（hidden 初值即 true，脚本必须显式放行才现形，UI-004
+// 同款教训由 htmlSeed 真值播种兜住）、有新版带目标版本号、升级中文案换「升级中」、成功后消失。
+// 前端二次确认腿（UI-002/004 的二段弹框、ack 勾选、逐字粘 commit）全撤。
+test('UI-006: card faces carry only the canonical name and one install-version line', () => {
   const html = renderManagerPage({ version: '0.4.15' })
-  for (const gone of [
-    'id="check-update"', 'id="check-dsh-version"', 'id="check-dsbot-version"', 'id="check-litellm"', 'id="check-sparkdash"',
-    'id="release-status"', 'id="dsh-version-status"', 'id="dsbot-version-status"', 'id="litellm-status"', 'id="sparkdash-status"',
-    'id="release-link"',
-  ]) assert.ok(!html.includes(gone), `${gone} must be gone from the card face`)
-  for (const present of [
-    'id="headbot-block"', 'id="dsh-block"', 'id="dsbot-block"', 'id="litellm-block"', 'id="sparkdash-block"',
-    'id="litellm-patch-pending"', 'id="headbot-confirm"', 'id="dsh-confirm"', 'id="dsbot-confirm"', 'id="litellm-confirm"', 'id="sparkdash-confirm"',
-  ]) assert.ok(html.includes(present), `${present} must live inside the confirm dialog`)
-  for (const id of ['id="upgrade-headbot"', 'id="upgrade-dsh"', 'id="update-all"', 'id="upgrade-litellm"', 'id="upgrade-sparkdash"'])
-    assert.ok(html.includes(id), `${id} must exist`)
-  // 卡面升级按钮不带 disabled 属性（恒可点）
-  for (const id of ['upgrade-headbot', 'upgrade-dsh', 'update-all', 'upgrade-litellm', 'upgrade-sparkdash'])
-    assert.match(html, new RegExp(`<button id="${id}" type="button">`), `#${id} must start enabled with no disabled attribute`)
+  // ① 五枚组件名一字不差（含曾经的旧写法必须绝迹）
+  for (const name of ['DS HeadBot', 'DS Bot', 'DeepSeek Harness', 'LiteLLM', 'SparkDash'])
+    assert.ok(html.includes(`<h2>${name}</h2>`), `card title must be exactly ${name}`)
+  for (const gone of ['DeepSeek Harness (DSH)', 'LiteLLM 推理网关', 'sparkDash 前端', 'sparkDash 本地'])
+    assert.ok(!html.includes(gone), `${gone} must be gone from the card face`)
+  // 卡面五行版本行=安装版本（只数渲染出的 span 文本，脚本串里的字面量不计）；旧的当前/最新双行绝迹
+  assert.equal((html.match(/<span[^>]*>安装版本：/g) || []).length, 5, 'exactly five install-version lines, one per card')
+  for (const gone of ['当前版本：', '最新版本：', '本地 commit：', '上游 HEAD：',
+    'id="headbot-confirm"', 'id="dsh-confirm"', 'id="dsbot-confirm"', 'id="litellm-confirm"', 'id="sparkdash-confirm"',
+    'id="litellm-ack"', 'id="sparkdash-ack"', 'id="sparkdash-confirm-input"', 'id="headbot-confirm-upgrade"', 'id="dsh-confirm-upgrade"', 'id="dsbot-confirm-upgrade"', 'id="litellm-confirm-upgrade"', 'id="sparkdash-confirm-upgrade"',
+    'id="headbot-release-link"', 'id="dsh-release-link"', 'id="litellm-release-link"', 'id="sparkdash-commit-link"',
+    'id="litellm-audit-details"', 'id="sparkdash-audit-details"'])
+    assert.ok(!html.includes(gone), `${gone} must be retired with the confirm dialogs`)
+  // ③ 两枚「打开」按钮（用户给定 URL 字面）
+  assert.match(html, /id="litellm-open"[^>]*href="http:\/\/192\.168\.1\.5:8888\/ui"/)
+  assert.match(html, /id="sparkdash-open"[^>]*href="http:\/\/192\.168\.1\.5:5555"/)
+  // ④ 卡面 HTML 无静态升级钮——无新版=DOM 无节点（不是 hidden），钮只由脚本按 status 生灭
+  for (const id of ['upgrade-headbot', 'upgrade-dsh', 'update-all', 'upgrade-litellm', 'upgrade-sparkdash']) {
+    assert.ok(html.includes(`id="${id}-slot"`), `#${id}-slot must exist as the render anchor`)
+    assert.ok(!html.includes(`<button id="${id}"`), `#${id} must not ship as a static node (无新版即无节点)`)
+  }
+  new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
 })
 
-test('UI-002: a blocked litellm upgrade button stays clickable and the dialog explains the gate', async () => {
+test('UI-006: the upgrade button renders only while an update exists, labels the target, reads 升级中 while busy and vanishes after success', async () => {
+  // 每个相位跑一遍独立页面实例：按钮节点必须完全由 status 驱动生灭（卡面 HTML 无静态钮，
+  // 渲染逻辑写错则节点永不存在或永不消失，UI-004 同族坑由「节点在否」断言直接兜住）。
+  const phases = {
+    latest: { currentVersion: '1.106.2', latestVersion: '1.106.2', updateAvailable: false, canUpgrade: false, state: 'idle', gate: { passed: true, reasons: [], details: [] } },
+    available: { currentVersion: '1.106.2', latestVersion: '1.109.1', updateAvailable: true, canUpgrade: true, state: 'idle', gate: { passed: true, reasons: [], details: [] } },
+    busy: { currentVersion: '1.106.2', latestVersion: '1.109.1', updateAvailable: true, canUpgrade: false, state: 'installing', message: '正在安装', gate: { passed: true, reasons: [], details: [] } },
+    success: { currentVersion: '1.109.1', latestVersion: '1.109.1', updateAvailable: false, canUpgrade: false, state: 'completed', message: '已升级到 LiteLLM 1.109.1', gate: { passed: true, reasons: [], details: [] } },
+  }
+  const source = renderManagerPage({ version: '0.4.19' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  const observed = {}
+  for (const [phase, litellm] of Object.entries(phases)) {
+    const elements = new Map(), handlers = new Map()
+    function element(key = 'created') {
+      const classes = new Set()
+      return {
+        key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
+        classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+        addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
+        append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+        querySelector() { return null },
+      }
+    }
+    const document = {
+      querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+      createElement(tag) { return element(tag) },
+    }
+    runInNewContext(source, {
+      document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
+      FormData: class { constructor() {} get() { return '' } },
+      async fetch(url) {
+        let data = { teams: [] }
+        if (url.includes('/litellm')) data = litellm
+        else if (url.includes('/release')) data = { currentVersion: '0.4.19', latestVersion: '0.4.19', updateAvailable: false, state: 'idle' }
+        else if (url.includes('/runtime-versions')) data = { dsh: { currentVersion: '0.2.2-rc.3', latestVersion: '0.2.2-rc.3', updateAvailable: false, canUpdate: true, state: 'idle' }, dsBot: { instances: [], latestVersion: '0.1.7', updateAvailable: false } }
+        else if (url.includes('/models')) data = { models: [] }
+        else if (url.includes('/audit')) data = { events: [] }
+        return { status: 200, ok: true, async json() { return data } }
+      },
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+    observed[phase] = { button: elements.get('#upgrade-litellm-slot').children.find(child => child.id === 'upgrade-litellm') || null, version: elements.get('#litellm-version'), block: elements.get('#litellm-block') }
+  }
+  // ① 无新版 → 按钮不渲染（DOM 无节点）；安装版本行如实
+  assert.equal(observed.latest.version.textContent, '安装版本：1.106.2')
+  assert.equal(observed.latest.button, null, 'no newer version → no button node in the DOM')
+  // ② 有新版 → 渲染+带目标版本号+可点
+  assert.ok(observed.available.button, 'a newer version must render the button node')
+  assert.equal(observed.available.button.textContent, '升级到 1.109.1', 'the label must carry the target version')
+  assert.equal(observed.available.button.disabled, false)
+  assert.equal(observed.available.button.classList.contains('update-ready'), true)
+  // ③ 升级中 → 「升级中」+禁点防重提+仍渲染
+  assert.ok(observed.busy.button, 'busy keeps the node rendered')
+  assert.equal(observed.busy.button.textContent, '升级中')
+  assert.equal(observed.busy.button.disabled, true)
+  // ④ 成功 → 按钮节点从 DOM 移除，版本行翻到新装版
+  assert.equal(observed.success.version.textContent, '安装版本：1.109.1')
+  assert.equal(observed.success.button, null, 'after success the button node must be removed from the DOM')
+})
+
+// UI-006 边界：前端废确认 ≠ 后端放松。blocked 态按钮仍渲染且恒可点，闸门理由由 API 返回、卡面
+// 如实呈（litellm 补丁闸门/sparkDash 脏改闸门的原文必须逐字可见）。
+test('UI-006: a blocked upgrade stays clickable and the card reports the gate reason verbatim', async () => {
   const elements = new Map(), handlers = new Map()
   function element(key = 'created') {
     const classes = new Set()
     return {
       key, style: {}, textContent: '', value: '', checked: false, ...htmlSeed(key), href: '', children: [], open: false,
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
-      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
       querySelector() { return null },
     }
@@ -584,15 +604,63 @@ test('UI-002: a blocked litellm upgrade button stays clickable and the dialog ex
   const litellmStatus = () => gatePassed
     ? { currentVersion: '1.106.2', latestVersion: '1.109.1', updateAvailable: true, canUpgrade: true, state: 'idle', gate: { passed: true, reasons: [], details: [{ target: '/venv/litellm/proxy/x.py', ok: true, md5Declared: false }] } }
     : { currentVersion: '1.106.2', latestVersion: '1.109.1', updateAvailable: true, canUpgrade: false, state: 'idle', gate: { passed: false, blockedBy: 'missing-archive', reasons: ['补丁基线档案缺失（manifest.json）：升级已阻断，请先由补丁维护方建档后重试'] } }
-  const source = renderManagerPage({ version: '0.4.15' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  let upgradePosts = 0, lastBody = null
+  const source = renderManagerPage({ version: '0.4.19' }).match(/<script>([\s\S]*?)<\/script>/)[1]
   runInNewContext(source, {
     document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
     FormData: class { constructor() {} get() { return '' } },
+    async fetch(url, options = {}) {
+      let data = { teams: [] }
+      if (url.includes('/litellm/upgrade')) { upgradePosts++; lastBody = JSON.parse(options.body || '{}'); return { status: 409, ok: false, async json() { return { error: '升级闸门未通过，升级已阻断：补丁基线档案缺失（manifest.json）' } } } }
+      else if (url.includes('/litellm/audit')) data = { items: [], progress: '' }
+      else if (url.includes('/litellm')) data = litellmStatus()
+      else if (url.includes('/release')) data = { currentVersion: '0.4.19', latestVersion: '0.4.19', updateAvailable: false, state: 'idle' }
+      else if (url.includes('/runtime-versions')) data = { dsh: { currentVersion: '0.2.2-rc.3', latestVersion: '0.2.2-rc.3', updateAvailable: false, canUpdate: true, state: 'idle' }, dsBot: { instances: [], latestVersion: '0.1.7', updateAvailable: false } }
+      else if (url.includes('/models')) data = { models: [] }
+      else if (url.includes('/audit')) data = { events: [] }
+      if (url.includes('/litellm/upgrade')) return { status: 409, ok: false, async json() { return { error: '升级闸门未通过，升级已阻断：补丁基线档案缺失（manifest.json）' } } }
+      return { status: 200, ok: true, async json() { return data } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  const click = async id => { const btn = litellmBtn(); if (!btn || btn.disabled) return false; const h = handlers.get(`${id}:click`); if (!h) return false; await h({}); return true }
+  const litellmSlot = elements.get('#upgrade-litellm-slot')
+  const litellmBtn = () => litellmSlot.children.find(child => child.id === 'upgrade-litellm')
+  assert.ok(litellmBtn(), 'blocked still renders the button node (可点且告知)')
+  assert.equal(litellmBtn().disabled, false, 'blocked must NOT grey the button out')
+  await click('upgrade-litellm')
+  assert.equal(upgradePosts, 1, 'one-step: the press reaches the backend, which owns the gate')
+  assert.equal(litellmBtn().disabled, false, 'after the 409 the button must stay clickable (恒可点重试)')
+  assert.equal(elements.get('#litellm-block').hidden, false)
+  assert.match(elements.get('#litellm-block').textContent, /补丁基线档案缺失/, 'the card must show the gate reason verbatim')
+  // 一步腿自证：ack 由页面代填（用户按下即授权），目标版本随体上送
+  assert.equal(lastBody.acknowledgeOutage, true)
+  assert.equal(lastBody.targetVersion, '1.109.1')
+  // gate 转绿（模型调度填齐 manifest 后）：BALANCE-001 pending 行如实（md5Declared=false 触发）
+  gatePassed = true
+  const greenElements = new Map(), greenHandlers = new Map()
+  function greenElement(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', checked: false, ...htmlSeed(key), href: '', children: [], open: false,
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const greenDocument = {
+    querySelector(key) { if (!greenElements.has(key)) greenElements.set(key, greenElement(key)); return greenElements.get(key) },
+    createElement(tag) { return greenElement(tag) },
+  }
+  runInNewContext(source, {
+    document: greenDocument, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
+    FormData: class { constructor() {} get() { return '' } },
     async fetch(url) {
       let data = { teams: [] }
-      if (url.includes('/litellm/audit')) data = { items: [], progress: '' }
-      else if (url.includes('/litellm')) data = litellmStatus()
-      else if (url.includes('/release')) data = { currentVersion: '0.4.15', latestVersion: '0.4.15', updateAvailable: false, state: 'idle' }
+      if (url.includes('/litellm')) data = litellmStatus()
+      else if (url.includes('/release')) data = { currentVersion: '0.4.19', latestVersion: '0.4.19', updateAvailable: false, state: 'idle' }
       else if (url.includes('/runtime-versions')) data = { dsh: { currentVersion: '0.2.2-rc.3', latestVersion: '0.2.2-rc.3', updateAvailable: false, canUpdate: true, state: 'idle' }, dsBot: { instances: [], latestVersion: '0.1.7', updateAvailable: false } }
       else if (url.includes('/models')) data = { models: [] }
       else if (url.includes('/audit')) data = { events: [] }
@@ -601,22 +669,8 @@ test('UI-002: a blocked litellm upgrade button stays clickable and the dialog ex
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
-  const button = elements.get('#upgrade-litellm')
-  assert.equal(button.disabled, false, 'blocked (canUpgrade=false) must NOT grey the button out')
-  await click('#upgrade-litellm')
-  assert.equal(elements.get('#litellm-confirm').hidden, false, 'blocked click still opens the dialog')
-  assert.equal(elements.get('#litellm-block').hidden, false)
-  assert.match(elements.get('#litellm-block').textContent, /补丁基线档案缺失/, 'the dialog must show the gate reason verbatim')
-  assert.equal(elements.get('#litellm-confirm-upgrade').hidden, true, 'no double-confirm affordance while blocked')
-  assert.equal(elements.get('#litellm-ack-row').hidden, true)
-  // gate 转绿（模型调度填齐 manifest 后）：双确认区出现；md5Declared=false → BALANCE-001 pending 行如实提示
-  gatePassed = true
-  await click('#upgrade-litellm')
-  assert.equal(elements.get('#litellm-block').hidden, true)
-  assert.equal(elements.get('#litellm-confirm-upgrade').hidden, false)
-  assert.equal(elements.get('#litellm-ack-row').hidden, false)
-  assert.equal(elements.get('#litellm-patch-pending').hidden, false, 'gate passed but md5 not declared → the pending-patch notice must show')
+  assert.equal(greenElements.get('#litellm-patch-pending').hidden, false, 'gate passed but md5 not declared → the pending-patch notice must show')
+  assert.equal(greenElements.get('#litellm-block').hidden, true, 'a passing gate must not print block copy')
 })
 
 test('manual DSH upgrade worker marks its updater invocation as user initiated', async t => {

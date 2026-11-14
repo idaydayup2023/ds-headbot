@@ -8,6 +8,7 @@ import { InboxPusher, createSessionResolver, createDeliverer } from './lib/inbox
 import { HeadbotReleaseUpdater } from './lib/release-updater.js'
 import { HeadbotRuntimeUpdater } from './lib/runtime-updater.js'
 import { LitellmGatewayUpdater } from './lib/litellm-updater.js'
+import { SparkdashUpdater } from './lib/sparkdash-updater.js'
 import { registerCommunicationTools } from './lib/team-plugin.js'
 
 const require = createRequire(import.meta.url)
@@ -45,6 +46,13 @@ export function apply(ctx, config = {}) {
   const litellmUpdater = config.litellmUpdate?.enabled === false
     ? undefined
     : new LitellmGatewayUpdater({ manager, logger: ctx.logger, config: config.litellmUpdate })
+  // SPARKDASH-UI-001: commit-level tracking + audited upgrade for the local sparkDash dashboard.
+  // No release/tag channel upstream, so the card compares commits only; the checkout path and the
+  // pull/npm/restart runbook arrive with the model dispatcher's SPARKDASH-LOCAL-001 runbook, and
+  // until then the card degrades honestly (未部署 / missing-plan) instead of faking a green.
+  const sparkdashUpdater = config.sparkdashUpdate?.enabled === false
+    ? undefined
+    : new SparkdashUpdater({ manager, logger: ctx.logger, config: config.sparkdashUpdate })
   const runtimeConfig = { ...config, publicHost: manager.publicHost, publicHosts: manager.publicHosts, version }
   const communications = new AuditedCommunications(manager.root, manager, config.communicationLimits)
   // Inbox push (INBOX-PUSH-001): online teams get their lead Bot session woken up the moment a
@@ -111,7 +119,7 @@ export function apply(ctx, config = {}) {
           try {
             const actor = await manager.authenticateTeam(req.headers.authorization)
             if (!actor) return json(res, 401, { error: 'invalid or revoked team credential' })
-            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater)
+            return await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater, sparkdashUpdater)
           } catch (error) {
             return json(res, error.statusCode ?? 503, { error: error.message })
           }
@@ -122,7 +130,7 @@ export function apply(ctx, config = {}) {
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
           return
         }
-        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater, runtimeUpdater, litellmUpdater)
+        await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater, runtimeUpdater, litellmUpdater, sparkdashUpdater)
       },
     })
 
@@ -156,7 +164,7 @@ export function apply(ctx, config = {}) {
   }, 'ds-headbot: manager and team processes')
 }
 
-export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater) {
+export async function handleApiRequest(req, res, manager, communications, runtimeConfig, logger, actor, releaseUpdater, runtimeUpdater, litellmUpdater, sparkdashUpdater) {
   const url = new URL(req.url ?? '/', 'http://headbot.local')
   const route = url.pathname.slice(API_PATH.length) || '/'
   const method = req.method ?? 'GET'
@@ -191,6 +199,18 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     if (method === 'GET' && route === '/litellm/audit') {
       if (!litellmUpdater) return json(res, 503, { error: 'litellm updater unavailable' })
       return json(res, 200, { items: await litellmUpdater.recentAudit(url.searchParams.get('limit')), progress: await litellmUpdater.readProgressTail() })
+    }
+    if (method === 'GET' && route === '/sparkdash') {
+      if (!sparkdashUpdater) return json(res, 503, { error: 'sparkdash updater unavailable' })
+      return json(res, 200, await sparkdashUpdater.check({ force: url.searchParams.get('refresh') === '1' }))
+    }
+    if (method === 'POST' && route === '/sparkdash/upgrade') {
+      if (!sparkdashUpdater) return json(res, 503, { error: 'sparkdash updater unavailable' })
+      return json(res, 202, await sparkdashUpdater.startUpgrade(await readJson(req, 4096), actor))
+    }
+    if (method === 'GET' && route === '/sparkdash/audit') {
+      if (!sparkdashUpdater) return json(res, 503, { error: 'sparkdash updater unavailable' })
+      return json(res, 200, { items: await sparkdashUpdater.recentAudit(url.searchParams.get('limit')), progress: await sparkdashUpdater.readProgressTail() })
     }
     if (actor) {
       if (method === 'GET' && route === '/comms/v1/teams') return json(res, 200, await communications.directory(actor))

@@ -33,6 +33,12 @@ function makeGit(scenario) {
       if (scenario.ancestor) return { stdout: '', stderr: '' }
       throw new Error('fatal: not a valid object name --is-ancestor')
     }
+    if (args[0] === 'log') {
+      // `git log -1 --format=%s <upstreamHead>` — the release-commit-subject mapping leg (the live
+      // 2026-11-15 case: upstream never tagged v2.90.0, the version lives in the subject only).
+      if (String(args[1] || '') === '-1' && scenario.releaseTitle) return { stdout: `${scenario.releaseTitle}\n`, stderr: '' }
+      throw new Error('fatal: bad object')
+    }
     if (args[0] === 'rev-parse') {
       if (scenario.revParseThrows) throw new Error(scenario.revParseThrows)
       return { stdout: `${scenario.head}\n`, stderr: '' }
@@ -461,6 +467,15 @@ test('UI-006 tag version: upstream tag mapping + ancestry decoration, honest unt
   const deco = makeUpdater({ head: A, upstream: B, behind: '0', ahead: '1', ancestor: true, upstreamTag: 'v2.90.0' }, { root: decoRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
   const decoStatus = await deco.check()
   assert.equal(decoStatus.localTagVersion, `v2.90.0-1-g${A.slice(0, 7)}`, '家装提交骑在发布 commit 之上 → describe 风格装饰形如实透出（现势 d77d1a3 案）')
+
+  // 现势家场实案：上游从未打 v2.90.0 tag（ls-remote 全集仅 media-showcase/v2.31.0/v2.32.0，API 三路
+  // 互证），版本只写在 HEAD commit 标题里 → 标题映射点亮 v2.90.0 并装饰本地家装提交，notes 留证据行。
+  const titleRoot = await tempDir('tags-title')
+  const title = makeUpdater({ head: A, upstream: B, behind: '0', ahead: '1', ancestor: true, releaseTitle: 'Release v2.90.0 and highlight it in README' }, { root: titleRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const titleStatus = await title.check()
+  assert.equal(titleStatus.upstreamTagVersion, 'v2.90.0', '无 tag 时版本取自发布 commit 标题（上游自己声明，非造假）')
+  assert.equal(titleStatus.localTagVersion, `v2.90.0-1-g${A.slice(0, 7)}`, '卡面读数：标题映射 base + 家装提交装饰')
+  assert.ok((titleStatus.notes || []).some(note => note.includes('上游未对') && note.includes('打 tag')), 'notes 如实留「tag 缺失、版本源自标题」证据行')
 
   const sameRoot = await tempDir('tags-same')
   const same = makeUpdater({ head: B, upstream: B, upstreamTag: 'v2.90.0' }, { root: sameRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })

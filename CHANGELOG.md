@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-11-14
+
+### Added
+
+- Add a commit-level version card and audited upgrade flow for the local sparkDash dashboard (SPARKDASH-UI-001). Upstream `MiaAI-Lab/sparkDash` publishes no releases or tags, so the fifth card compares commits only — `git ls-remote` upstream HEAD against the local checkout — and claims "HEAD 一致" only on byte-identical SHAs, never a fabricated semver equality; behind counts report "待 fetch 落地" when the upstream commit is not yet in the local object store. All gates fail closed: an absent checkout honestly reads 未部署/待实况单, any uncommitted change (or an unreadable worktree) blocks the upgrade and reports to a human, and the upgrade stays shut until the runbook plan (pull → npm ci → restart) is configured. Upgrades run only behind a double confirmation that acknowledges the restart outage and re-types the full 40-character target commit; the worker re-checks the dirty gate before touching anything, verifies the HEAD read-back, rolls back to the pre-upgrade commit on failure, and appends every attempt to `sparkdash-upgrade-audit.jsonl`. The model dispatcher's REPO-WATCH ledger reading is cross-checked, with the live probe winning on disagreement plus a note.
+
 ## [0.4.13] - 2026-11-14
 
 ### Added

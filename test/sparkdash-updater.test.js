@@ -54,6 +54,9 @@ function makeUpdater(scenario, overrides = {}) {
     logger: undefined,
     runImpl: overrides.runImpl || makeGit(scenario || {}),
     spawnImpl: overrides.spawnImpl || ((command, args) => { spawned.push(args); return { once() {}, unref() {} } }),
+    // Scenarios describe what git answers; the disk is mocked to match them (the ENOENT
+    // regression case below overrides existsImpl with the real predicate).
+    existsImpl: overrides.existsImpl || (() => true),
     config: {
       localDir: '/fake/sparkdash-checkout',
       ...overrides.config,
@@ -176,6 +179,41 @@ test('missing checkout reports 未部署 honestly and refuses upgrades with 503'
   const broken = await notRepo.check()
   assert.equal(broken.deployed, false)
   assert.match(broken.localError, /not a git repository/)
+})
+
+// UI-002 实景回归炮（总务 15:1x 逮到的装窗前现势态）：localDir 已注入但目录尚不存在，
+// 上游探针不得吃 localDir 当 cwd（spawn 不存在目录报的就是 spawn git ENOENT），本地读解
+// 也不得撞进空目录——upstreamHead 照读，gate 理由回归干净的「未部署」文案而非 ENOENT。
+test('pre-install window: configured-but-missing localDir still reads upstream HEAD and keeps the gate copy clean', async () => {
+  const root = await tempDir('preinstall')
+  const missingDir = '/fake/sparkdash-not-installed-yet'
+  const probes = []
+  const runImpl = async (command, args, opts) => {
+    probes.push({ args: [...args], cwd: opts?.cwd })
+    if (command !== 'git') throw new Error(`unexpected command ${command}`)
+    if (args[0] === 'ls-remote') return { stdout: `${B}\trefs/heads/main\n`, stderr: '' }
+    // Every local probe would die exactly like the real window: spawn into a void cwd.
+    throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' })
+  }
+  const updater = makeUpdater(null, {
+    root,
+    runImpl,
+    existsImpl: target => target !== missingDir,
+    config: { localDir: missingDir, upgradePlan: PLAN },
+  })
+  const status = await updater.check()
+  // ① 上游照读：探针与缺失的 checkout 解耦，且 provably 钉在中性 cwd 上。
+  assert.equal(status.upstreamHead, B, 'upstreamHead 照读——ls-remote 不得吃缺失的 localDir 当 cwd')
+  assert.equal(status.upstreamError, null)
+  assert.deepEqual(probes.map(p => p.args[0]), ['ls-remote'], '目录不存在时不得向本地 git 探针 spawn')
+  assert.equal(probes[0].cwd, process.cwd(), '上游探针钉中性 cwd')
+  // ② gate 回归干净「未部署」文案，ENOENT 假象绝迹。
+  assert.equal(status.deployed, false)
+  assert.equal(status.localError, null)
+  assert.equal(status.canUpgrade, false)
+  assert.equal(status.gate.blockedBy, 'missing-checkout')
+  assert.match(status.gate.reasons.join(' '), /未部署/)
+  assert.doesNotMatch(status.gate.reasons.join(' '), /ENOENT/)
 })
 
 test('double confirmation: 400 without ack or target, 409 when the target commit drifted', async () => {

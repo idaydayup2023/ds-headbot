@@ -4,6 +4,16 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-11-14
+
+### Added
+
+- UI-002: the five version cards (DS HeadBot / DS Bot / DSH / LiteLLM / sparkDash) keep exactly three elements on the card face — current version, latest version, upgrade button. All status copy, gate reasons, notes and audit details moved into the upgrade dialog, which is now always clickable: a fail-closed gate renders as an honest explanation of what blocks the upgrade instead of a dead greyed-out button, while the server-side triple gate and the double confirmation stay in force. window.confirm is fully replaced by the two-step dialog; the LiteLLM dialog additionally shows a BALANCE-001 patch-pending line (gate details now carry md5Declared) so an upgrade to an unpatched build is visible before approval.
+
+### Fixed
+
+- sparkDash pre-install window (localDir configured, checkout not yet installed): the upstream ls-remote probe no longer runs with the missing checkout as cwd — the git() default argument re-filled localDir for an explicit undefined and spawn reported a misleading "spawn git ENOENT" — and the local read treats an absent directory as honest 未部署 instead of probing git into a void cwd. upstreamHead keeps reading correctly and the gate reason returns to the clean 未部署 wording (regression cannon in the test suite).
+
 ## [0.4.15] - 2026-11-14
 
 ### Fixed

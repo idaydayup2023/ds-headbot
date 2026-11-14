@@ -259,8 +259,10 @@ test('default anchors follow the 2026-11-14 migration home (~/ai/litellm)', () =
   // 迁移实锤：旧 …/DeepSeekHarnessMaintenance/litellm-20261022 树已物理删除，默认锚滞留旧径时
   // 版本回读 spawn ENOENT → currentVersion=null、升级钮冻死（11-14 21:4x 卡面活体实录）。
   const root = path.join(os.tmpdir(), 'litellm-default-anchors')
+  // uv 分支由 existsImpl 谓词决定——显式注入，不让断言依赖跑机现场（本机有 uv、CI runner 没有）。
   const updater = new LitellmGatewayUpdater({
     manager: { root, parentHome: path.join(root, 'parent') },
+    existsImpl: file => file === path.join(os.homedir(), 'ai', 'litellm', 'bin', 'uv'),
     config: { launchdLabel: 'com.test.litellm' },
   })
   assert.equal(updater.venvDir, path.join(os.homedir(), 'ai', 'litellm', 'venv'))

@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-11-15
+
+### Changed
+
+- UI-006: the five version cards follow the 2026-11-15 user directive verbatim. Component names are the five canonical strings (DS HeadBot / DS Bot / DeepSeek Harness / LiteLLM / SparkDash) with the legacy label spellings retired; each card face carries exactly one version line (安装版本：…) — SparkDash, which has no release channel, shows its git tag version via upstream `refs/tags/*` matching the local HEAD (with an honest 未标记 commit fallback when no tag covers it). The upgrade button now has a real DOM lifecycle instead of `hidden` toggling: no node at all while nothing is newer, `升级到 <target>` when a newer version exists, `升级中` (disabled, 防重提) while busy, node removed after success. Pressing it executes the upgrade directly — the UI-004 front-end confirm dialogs are retired — while every backend gate (litellm patch gate, triple verification, dirty-worktree plan, targetCommit==HEAD) stays in force and its 409 reason is reported verbatim on the card block line, the button remaining clickable for retry. LiteLLM and SparkDash gain 打开 buttons pointing at http://192.168.1.5:8888/ui and http://192.168.1.5:5555 respectively.
+
 ## [0.4.19] - 2026-11-14
 
 ### Fixed

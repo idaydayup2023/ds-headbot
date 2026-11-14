@@ -351,6 +351,15 @@ test('browser creation retains its form after event.currentTarget is cleared', a
   assert.equal(elements.get('#error').textContent,'')
 })
 
+// UI-004: mock elements seed disabled/hidden from the REAL initial HTML markup — a button that
+// ships `disabled` stays grey until the page script explicitly lifts it, and the click helper
+// short-circuits on disabled exactly like a real browser. Without this seeding the 0.4.16
+// "confirm button grey forever" bug was invisible to the cannon.
+function htmlSeed(key) {
+  const tag = new RegExp(`<(?:button|input)[^>]*id="${key.replace(/^#/, '')}"[^>]*>`).exec(renderManagerPage())
+  return { disabled: Boolean(tag) && /\sdisabled\b/.test(tag[0]), hidden: Boolean(tag) && /\shidden\b/.test(tag[0]) }
+}
+
 test('browser highlights a newer Headbot release and starts the upgrade on click', async () => {
   const elements = new Map(), handlers = new Map()
   let upgradeRequests = 0
@@ -358,7 +367,7 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   function element(key = 'created') {
     const classes = new Set()
     return {
-      key, style: {}, textContent: '', value: '', disabled: false, hidden: false, href: '', children: [],
+      key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
       addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
@@ -392,10 +401,14 @@ test('browser highlights a newer Headbot release and starts the upgrade on click
   assert.equal(upgradeButton.textContent, '升级到 v0.2.7')
   assert.equal(upgradeButton.classList.contains('update-ready'), true)
 
-  await handlers.get('#upgrade-headbot:click')({})
+  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
+  await click('#upgrade-headbot')
   assert.equal(elements.get('#headbot-confirm').hidden, false, 'the always-clickable button opens the dialog')
   assert.equal(upgradeRequests, 0, 'the card button alone must not start an upgrade')
-  await handlers.get('#headbot-confirm-upgrade:click')({})
+  // UI-004: the HTML ships this button `disabled` — the ready state must lift it, otherwise the
+  // click helper below short-circuits like a real browser and upgradeRequests stays 0.
+  assert.equal(elements.get('#headbot-confirm-upgrade').disabled, false, 'UI-004: ready state must lift the HTML initial disabled')
+  await click('#headbot-confirm-upgrade')
   assert.equal(upgradeRequests, 1)
   assert.equal(upgradeButton.disabled, true)
   assert.equal(upgradeButton.textContent, '正在升级…')
@@ -407,7 +420,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   function element(key = 'created') {
     const classes = new Set()
     return {
-      key, style: {}, textContent: '', value: '', disabled: false, hidden: false, href: '', children: [],
+      key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
       addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
@@ -448,11 +461,14 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
+  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
   const upgradeButton = elements.get('#upgrade-dsh')
   assert.equal(upgradeButton.disabled, false)
-  await handlers.get('#upgrade-dsh:click')({})
+  await click('#upgrade-dsh')
   assert.equal(elements.get('#dsh-confirm').hidden, false, 'the always-clickable button opens the dialog')
-  await handlers.get('#dsh-confirm-upgrade:click')({})
+  // UI-004: same grey-button contract on the DSH card.
+  assert.equal(elements.get('#dsh-confirm-upgrade').disabled, false, 'UI-004: ready state must lift the HTML initial disabled')
+  await click('#dsh-confirm-upgrade')
   assert.equal(upgradeButton.textContent, '正在升级…')
   assert.ok([...timers.values()].some(timer => timer.delay === 2500), 'busy state schedules a quick status poll')
 
@@ -475,6 +491,59 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   assert.equal(elements.get('#current-dsh-version').textContent, '当前版本：v0.2.1-rc.3')
   assert.equal(elements.get('#dsh-block').textContent, '已升级到 0.2.1-rc.3')
   assert.equal(upgradeButton.textContent, '已是最新')
+})
+
+// UI-004 验收口径：三卡（headbot/dsh/dsbot）弹框确认钮在 HTML 里带初值 disabled，
+// ready 态开框后必须由 render* 显式解禁（disabled===false），blocked 态则恒 true 且框照开。
+test('UI-004: ready-state confirm buttons must lift the HTML initial disabled on all three cards', async () => {
+  const elements = new Map(), handlers = new Map()
+  function element(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', ...htmlSeed(key), href: '', children: [],
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const document = {
+    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+    createElement(tag) { return element(tag) },
+  }
+  const source = renderManagerPage({ version: '0.4.17' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
+    FormData: class { constructor() {} get() { return '' } },
+    async fetch(url) {
+      let data = { teams: [] }
+      if (url.includes('/release')) data = { currentVersion: '0.4.17', latestVersion: '0.4.18', updateAvailable: true, state: 'idle' }
+      else if (url.includes('/runtime-versions')) data = {
+        dsh: { currentVersion: '0.2.2-rc.3', latestVersion: '0.2.3-rc.1', updateAvailable: true, canUpdate: true, state: 'idle' },
+        dsBot: { instances: [{ currentVersion: '0.1.6', status: 'running' }], latestVersion: '0.1.7', updateAvailable: true },
+      }
+      else if (url.includes('/models')) data = { models: [] }
+      else if (url.includes('/audit')) data = { events: [] }
+      return { status: 200, ok: true, async json() { return data } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
+  // The HTML ships these three confirm buttons `disabled` — assert the seed itself (the page
+  // script has already run by now, so element state reflects the render, not the initial markup).
+  assert.equal(htmlSeed('#headbot-confirm-upgrade').disabled, true, 'sanity: HTML initial value is disabled')
+  assert.equal(htmlSeed('#dsh-confirm-upgrade').disabled, true)
+  assert.equal(htmlSeed('#dsbot-confirm-upgrade').disabled, true)
+  await click('#upgrade-headbot')
+  await click('#upgrade-dsh')
+  await click('#update-all')
+  assert.equal(elements.get('#headbot-confirm').hidden, false)
+  assert.equal(elements.get('#dsh-confirm').hidden, false)
+  assert.equal(elements.get('#dsbot-confirm').hidden, false)
+  assert.equal(elements.get('#headbot-confirm-upgrade').disabled, false, 'headbot ready → the confirm button must be clickable')
+  assert.equal(elements.get('#dsh-confirm-upgrade').disabled, false, 'dsh ready → the confirm button must be clickable')
+  assert.equal(elements.get('#dsbot-confirm-upgrade').disabled, false, 'dsbot ready → the confirm button must be clickable')
 })
 
 test('UI-002: version cards keep only three elements; details live in the confirm dialog', () => {
@@ -500,7 +569,7 @@ test('UI-002: a blocked litellm upgrade button stays clickable and the dialog ex
   function element(key = 'created') {
     const classes = new Set()
     return {
-      key, style: {}, textContent: '', value: '', checked: false, disabled: false, hidden: false, href: '', children: [], open: false,
+      key, style: {}, textContent: '', value: '', checked: false, ...htmlSeed(key), href: '', children: [], open: false,
       classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
       addEventListener(type, handler) { handlers.set(`${key}:${type}`, handler) },
       append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
@@ -532,9 +601,10 @@ test('UI-002: a blocked litellm upgrade button stays clickable and the dialog ex
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
+  const click = async key => { const el = elements.get(key); if (el.disabled) return false; const h = handlers.get(`${key}:click`); if (!h) return false; await h({}); return true }
   const button = elements.get('#upgrade-litellm')
   assert.equal(button.disabled, false, 'blocked (canUpgrade=false) must NOT grey the button out')
-  await handlers.get('#upgrade-litellm:click')({})
+  await click('#upgrade-litellm')
   assert.equal(elements.get('#litellm-confirm').hidden, false, 'blocked click still opens the dialog')
   assert.equal(elements.get('#litellm-block').hidden, false)
   assert.match(elements.get('#litellm-block').textContent, /补丁基线档案缺失/, 'the dialog must show the gate reason verbatim')
@@ -542,7 +612,7 @@ test('UI-002: a blocked litellm upgrade button stays clickable and the dialog ex
   assert.equal(elements.get('#litellm-ack-row').hidden, true)
   // gate 转绿（模型调度填齐 manifest 后）：双确认区出现；md5Declared=false → BALANCE-001 pending 行如实提示
   gatePassed = true
-  await handlers.get('#upgrade-litellm:click')({})
+  await click('#upgrade-litellm')
   assert.equal(elements.get('#litellm-block').hidden, true)
   assert.equal(elements.get('#litellm-confirm-upgrade').hidden, false)
   assert.equal(elements.get('#litellm-ack-row').hidden, false)

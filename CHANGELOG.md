@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-11-14
+
+### Fixed
+
+- UI-004: the HeadBot / DS Bot / DSH upgrade dialogs no longer keep their confirm buttons grey forever. The 0.4.16 dialogs shipped those buttons with the HTML `disabled` attribute while the render functions only toggled `hidden`, so in a real browser no user could confirm an upgrade (litellm/sparkdash escaped only via their ack-checkbox / commit-input activation legs). The render functions now sync `disabled=!ready` alongside `hidden`, matching the litellm dialog shape; server-side gates are untouched. The mock test harness now seeds disabled/hidden from the real rendered HTML and short-circuits click dispatch on disabled like a browser, so this class of bug can no longer hide from the test suite.
+
 ## [0.4.17] - 2026-11-14
 
 ### Fixed

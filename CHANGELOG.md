@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-11-14
+
+### Fixed
+
+- UI-003: the LiteLLM upgrade worker now works on uv-created venvs. The 16:15 live run failed at its very first step with `spawn …/venv/bin/pip ENOENT` — the venv has no pip at all (pyvenv.cfg `uv = 0.13.1`). The installer is generalized from a pip binary path to plain command arrays defaulting to the uv beside the venv (`uv pip install/freeze --python <venv>/bin/python`, installCmd carrying a `<target>` placeholder, config.installerCmd overriding both); the automatic rollback reuses the same installer with the pinned current version. A pre-spawn existence preflight smokes every distinct installer head with `--version` before anything else runs, and a failure before any mutation now records an honest 无需回退（零变更）state plus a `noChanges` audit row instead of thrashing a second rollback spawn into the same ENOENT wall. Gates unchanged: triple confirmation, patch gate and post-upgrade verification stay in force.
+
 ## [0.4.16] - 2026-11-14
 
 ### Added

@@ -475,7 +475,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   pollPromise = poll[1].callback()
   await new Promise(resolve => setImmediate(resolve))
   await pollPromise
-  assert.equal(elements.get('#dsh-block').textContent, 'DSH 正在重启，页面会自动重新连接并检查升级结果。')
+  assert.equal(elements.get('#dsh-block').textContent, '', 'UI-007①：重启窗口期卡面零话术（busy 只由按钮表达）')
   assert.equal(dshButton().disabled, true, 'while restarting the button must stay rendered as 升级中')
 
   updateState = 'completed'
@@ -513,6 +513,14 @@ test('UI-006: card faces carry only the canonical name and one install-version l
   // ③ 两枚「打开」按钮（用户给定 URL 字面）
   assert.match(html, /id="litellm-open"[^>]*href="http:\/\/192\.168\.1\.5:8888\/ui"/)
   assert.match(html, /id="sparkdash-open"[^>]*href="http:\/\/192\.168\.1\.5:5555"/)
+  // UI-007②：卡面压成一行——组件名 + 安装版本 + 按钮，同一 cardline 三元素；hidden block 行是唯一行下挂
+  for (const [id, name] of [['headbot', 'DS HeadBot'], ['dsbot', 'DS Bot'], ['dsh', 'DeepSeek Harness'], ['litellm', 'LiteLLM'], ['sparkdash', 'SparkDash']]) {
+    assert.match(html, new RegExp(`<div class="cardline"><h2>${name}</h2><p class="small version-values"><span id="${id}-version">安装版本：[\\s\\S]*?<div class="actions">[\\s\\S]*?</div></div>`), `${name} 卡面必须是单行三元素（名+安装版本+按钮）`)
+    assert.match(html, new RegExp(`<p id="${id}-block" class="small" hidden></p>`), `${name} 的 block 行默认 hidden 且不带静态话术`)
+  }
+  // UI-007①：state.message 类执行结果/进度话术绝不上卡面（busy 只有按钮文字「升级中」表达）
+  for (const gone of ['已升级到', '正在安装', '正在逐个更新', '正在下载并安装', '正在准备升级', '升级进行中', '升级后 DSH', '安装完成，请重启', '上次升级失败', '上次升级未完成', 'DSH 正在重启', '批量更新中断', '所有实例的 DS Bot 已更新', '正在按实况单升级', '升级中…', '主 DSH 实例最后更新'])
+    assert.ok(!html.includes(gone), `${gone} — state.message/status prose must never reach the card face`)
   // ④ 卡面 HTML 无静态升级钮——无新版=DOM 无节点（不是 hidden），钮只由脚本按 status 生灭
   for (const id of ['upgrade-headbot', 'upgrade-dsh', 'update-all', 'upgrade-litellm', 'upgrade-sparkdash']) {
     assert.ok(html.includes(`id="${id}-slot"`), `#${id}-slot must exist as the render anchor`)
@@ -573,13 +581,15 @@ test('UI-006: the upgrade button renders only while an update exists, labels the
   assert.equal(observed.available.button.textContent, '升级到 1.109.1', 'the label must carry the target version')
   assert.equal(observed.available.button.disabled, false)
   assert.equal(observed.available.button.classList.contains('update-ready'), true)
-  // ③ 升级中 → 「升级中」+禁点防重提+仍渲染
+  // ③ 升级中 → 「升级中」+禁点防重提+仍渲染；UI-007① busy 不另加状态行
   assert.ok(observed.busy.button, 'busy keeps the node rendered')
   assert.equal(observed.busy.button.textContent, '升级中')
   assert.equal(observed.busy.button.disabled, true)
-  // ④ 成功 → 按钮节点从 DOM 移除，版本行翻到新装版
+  assert.equal(observed.busy.block.hidden, true, 'UI-007①：state.message「正在安装」不得上卡面')
+  // ④ 成功 → 按钮节点从 DOM 移除，版本行翻到新装版，且「已升级到…」话术不上卡面
   assert.equal(observed.success.version.textContent, '安装版本：1.109.1')
   assert.equal(observed.success.button, null, 'after success the button node must be removed from the DOM')
+  assert.equal(observed.success.block.hidden, true, 'UI-007①：state.message「已升级到」不得上卡面')
 })
 
 // UI-006 边界：前端废确认 ≠ 后端放松。blocked 态按钮仍渲染且恒可点，闸门理由由 API 返回、卡面

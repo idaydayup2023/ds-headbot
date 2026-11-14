@@ -129,7 +129,10 @@ test('worker installs, restarts, verifies the triple and lands a completed audit
   const auditFile = path.join(root, 'audit.jsonl')
   const logFile = path.join(root, 'update.log')
   const config = {
-    litellmBin: '/venv/bin/litellm', pipBin: '/venv/bin/pip', launchdLabel: 'com.test.litellm', uid: 501,
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==<target>'],
+    freezeCmd: ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'],
+    launchdLabel: 'com.test.litellm', uid: 501,
     gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
     targetVersion: '1.107.0-stable', currentVersion: '1.106.2', stateFile, auditFile, logFile,
     backupDir: path.join(root, 'backup'),
@@ -144,9 +147,10 @@ test('worker installs, restarts, verifies the triple and lands a completed audit
   await performLitellmUpgrade(config, { runCommand, fetchImpl, patchGate })
   const state = JSON.parse(await readFile(stateFile, 'utf8'))
   assert.equal(state.state, 'completed')
-  assert.deepEqual(calls[0], ['/venv/bin/pip', 'freeze'])
-  assert.deepEqual(calls[1], ['/venv/bin/pip', 'install', '--upgrade', 'litellm==1.107.0-stable'])
-  assert.deepEqual(calls[2], ['/bin/launchctl', 'kickstart', '-k', 'gui/501/com.test.litellm'])
+  assert.deepEqual(calls[0], ['/fake-bin/uv', '--version'], 'preflight smokes the installer head first')
+  assert.deepEqual(calls[1], ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'])
+  assert.deepEqual(calls[2], ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==1.107.0-stable'])
+  assert.deepEqual(calls[3], ['/bin/launchctl', 'kickstart', '-k', 'gui/501/com.test.litellm'])
   assert.match(await readFile(path.join(config.backupDir, 'pip-freeze-before.txt'), 'utf8'), /Successfully installed/)
   const auditLines = (await readFile(auditFile, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
   assert.equal(auditLines.at(-1).action, 'upgrade-completed')
@@ -158,7 +162,10 @@ test('worker rolls back to the pinned old version when the patch re-check fails'
   const calls = []
   let installed = '1.106.2'
   const config = {
-    litellmBin: '/venv/bin/litellm', pipBin: '/venv/bin/pip', launchdLabel: 'com.test.litellm', uid: 501,
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==<target>'],
+    freezeCmd: ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'],
+    launchdLabel: 'com.test.litellm', uid: 501,
     gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
     targetVersion: '1.107.0-stable', currentVersion: '1.106.2',
     stateFile: path.join(root, 'state.json'), auditFile: path.join(root, 'audit.jsonl'), logFile: path.join(root, 'update.log'),
@@ -167,14 +174,14 @@ test('worker rolls back to the pinned old version when the patch re-check fails'
   const runCommand = async (command, args) => {
     calls.push([command, ...args])
     if (args[0] === '--version') return { stdout: `LiteLLM: ${installed}`, stderr: '' }
-    if (args[0] === 'install') installed = /litellm==(.+)$/.exec(args.at(-1))[1]
+    if (args.includes('install')) installed = /litellm==(.+)$/.exec(args.at(-1))[1]
     return { stdout: 'ok', stderr: '' }
   }
   const patchGate = async () => ({ passed: false, reasons: ['补丁失效（目标文件与基线不符）：/x'], details: [] })
   await performLitellmUpgrade(config, { runCommand, fetchImpl: async () => ({ status: 200 }), patchGate })
   process.exitCode = 0
   assert.equal(installed, '1.106.2', 'rollback must restore the pinned old version')
-  const installs = calls.filter(call => call[1] === 'install')
+  const installs = calls.filter(call => call.includes('install'))
   assert.deepEqual(installs[0].at(-1), 'litellm==1.107.0-stable')
   assert.deepEqual(installs[1].at(-1), 'litellm==1.106.2')
   const state = JSON.parse(await readFile(config.stateFile, 'utf8'))
@@ -189,7 +196,10 @@ test('worker failure also rolls back when the gateway never comes back healthy',
   const root = await tempDir('worker-gateway-down')
   let installed = '1.106.2'
   const config = {
-    litellmBin: '/venv/bin/litellm', pipBin: '/venv/bin/pip', launchdLabel: 'com.test.litellm', uid: 501,
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==<target>'],
+    freezeCmd: ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'],
+    launchdLabel: 'com.test.litellm', uid: 501,
     gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
     targetVersion: '1.107.0-stable', currentVersion: '1.106.2',
     stateFile: path.join(root, 'state.json'), auditFile: path.join(root, 'audit.jsonl'), logFile: path.join(root, 'update.log'),
@@ -197,7 +207,7 @@ test('worker failure also rolls back when the gateway never comes back healthy',
   }
   const runCommand = async (command, args) => {
     if (args[0] === '--version') return { stdout: `LiteLLM: ${installed}`, stderr: '' }
-    if (args[0] === 'install') installed = /litellm==(.+)$/.exec(args.at(-1))[1]
+    if (args.includes('install')) installed = /litellm==(.+)$/.exec(args.at(-1))[1]
     return { stdout: 'ok', stderr: '' }
   }
   // The gateway stays unhealthy while the new version is installed; rollback restores health.
@@ -208,4 +218,39 @@ test('worker failure also rolls back when the gateway never comes back healthy',
   const auditLines = (await readFile(config.auditFile, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
   assert.equal(auditLines.at(-1).action, 'upgrade-failed')
   assert.equal(auditLines.at(-1).rolledBack, true)
+})
+
+// UI-003 实景炮（16:15 用户点击后的真实现场）：venv 由 uv 造、bin/ 无 pip，
+// spawn 首步即 ENOENT。修后要求：preflight 冒烟挡在 freeze 之前、失败文案诚实
+// 「无需回退」、绝不再 spawn 第二回撞回退墙、audit 落 noChanges 账。
+test('UI-003: a pip-less venv fails honestly at the installer preflight — no freeze spawn, no rollback thrash', async () => {
+  const root = await tempDir('worker-preflight')
+  const calls = []
+  const config = {
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/venv/bin/pip', 'install', '--upgrade', 'litellm==<target>'],
+    freezeCmd: ['/venv/bin/pip', 'freeze'],
+    launchdLabel: 'com.test.litellm', uid: 501,
+    gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
+    targetVersion: '1.107.0-stable', currentVersion: '1.106.2',
+    stateFile: path.join(root, 'state.json'), auditFile: path.join(root, 'audit.jsonl'), logFile: path.join(root, 'update.log'),
+    backupDir: path.join(root, 'backup'),
+  }
+  const runCommand = async (command, args) => {
+    calls.push([command, ...args])
+    throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' })
+  }
+  await performLitellmUpgrade(config, { runCommand, fetchImpl: async () => ({ status: 200 }), patchGate: async () => ({ passed: true, reasons: [], details: [] }) })
+  process.exitCode = 0
+  const state = JSON.parse(await readFile(config.stateFile, 'utf8'))
+  assert.equal(state.state, 'failed')
+  assert.match(state.message, /安装命令预检失败/)
+  assert.match(state.message, /无需回退/)
+  assert.doesNotMatch(state.message, /自动回退失败/, 'zero-change failure must not re-hit the rollback wall')
+  const auditLines = (await readFile(config.auditFile, 'utf8')).split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+  assert.equal(auditLines.at(-1).action, 'upgrade-failed')
+  assert.equal(auditLines.at(-1).noChanges, true)
+  assert.equal(auditLines.at(-1).rolledBack, false)
+  // 唯一一次 spawn=冒烟本体；freeze/install/回退一条未发。
+  assert.deepEqual(calls, [['/venv/bin/pip', '--version']])
 })

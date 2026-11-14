@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-11-14
+
+### Fixed
+
+- The sparkDash runbook plan now accepts the model dispatcher B④ shape verbatim: steps/verify/rollback entries may be shell one-liners (executed via /bin/sh so ~ expansion, $(id -u) and quoting work as written) with <target_sha>/<previous_sha> placeholders filled from the pinned before/target pair. The REPO-WATCH ledger reader became repo-aware over the human 台账.md: it takes the newest line naming the repo with a full 40-char SHA (baseline-table row), ignores litellm rows and short SHAs in daily-report lines, and still defers to the live ls-remote probe with a note when nothing parses.
+
 ## [0.4.14] - 2026-11-14
 
 ### Added

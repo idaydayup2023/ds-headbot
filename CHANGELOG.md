@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-11-15
+
+### Fixed
+
+- SparkDash card tag version no longer trusts the local clone's tag set. The first live run showed the flaw the 0.4.20 describe-based read could not survive: the local checkout carries tags only up to v2.32.0 while HEAD is one local-patch commit on top of the upstream v2.90.0 release commit, so a local `git describe --tags` printed the honest-looking but wrong `v2.32.0-447-g…`. The tag version is now resolved against the upstream `refs/tags/*` set plus local ancestry: a tag ON the commit reads verbatim regardless of local tag freshness, a local-patched HEAD riding on the upstream release commit reads as the git-describe style `v2.90.0-1-gd77d1a3`, and anything else stays an honest 未标记 commit short-sha — a version is never fabricated.
+
 ## [0.4.20] - 2026-11-15
 
 ### Changed

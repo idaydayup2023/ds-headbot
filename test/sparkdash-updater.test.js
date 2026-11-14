@@ -27,10 +27,11 @@ function makeGit(scenario) {
       }
       return { stdout: `${scenario.upstream}\tHEAD\n${scenario.upstream}\trefs/heads/${scenario.branch || 'main'}\n`, stderr: '' }
     }
-    if (args[0] === 'describe') {
-      // --exact-match semantics: only a tag ON the commit answers; anything else exits non-zero.
-      if (scenario.localTag) return { stdout: `${scenario.localTag}\n`, stderr: '' }
-      throw new Error('fatal: no tag exactly matches')
+    if (args[0] === 'merge-base') {
+      // `git merge-base --is-ancestor <upstreamHead> <head>`: ancestor → exit 0, anything else is
+      // a git failure. Only consulted when local-patched HEADs need decoration.
+      if (scenario.ancestor) return { stdout: '', stderr: '' }
+      throw new Error('fatal: not a valid object name --is-ancestor')
     }
     if (args[0] === 'rev-parse') {
       if (scenario.revParseThrows) throw new Error(scenario.revParseThrows)
@@ -443,15 +444,23 @@ test('worker HEAD read-back mismatch counts as failure, not a completed lie', as
   process.exitCode = 0
 })
 
-// UI-006（2026-11-15 用户令）：SparkDash 卡面版本=tag 版本号（v2.90.0 现势）。三态如实：
-// ① HEAD 带 tag → localTagVersion 直读；② HEAD 与上游 HEAD 一致但本地 describe 失败 → 继承
-// 上游 tag（同一发布映射，非造假——两 sha 逐字等值已证）；③ 无 tag → null，页面诚实「未标记」。
-test('UI-006 tag version: describe exact-match locally, ls-remote mapping upstream, honest untagged', async () => {
+// UI-006（2026-11-15 用户令）：SparkDash 卡面版本=tag 版本号（现势 v2.90.0）。本地 clone 的 tag 集
+// 可能滞后（现势家场：本地 tags 止于 v2.32.0，而 HEAD 是 v2.90.0+1 家装提交），故映射以**上游
+// refs/tags/* + 本地祖先关系**定夺，本地 describe 不采信：
+// ① HEAD 恰为上游某 tag 的目标 sha → tag 名逐字；② 家装提交骑在上游发布 commit 之上（ahead>0 且
+// is-ancestor 过）→ git describe 风格装饰形 v2.90.0-1-gxxxxxxx；③ 都不成立 → null，卡面诚实
+// 「未标记 commit xxxxxxx」。版本永不造假。
+test('UI-006 tag version: upstream tag mapping + ancestry decoration, honest untagged', async () => {
   const root = await tempDir('tags')
-  const tagged = makeUpdater({ head: A, upstream: B, behind: '1', upstreamTag: 'v2.90.0', localTag: 'v2.89.0' }, { root, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const tagged = makeUpdater({ head: A, upstream: B, behind: '1', upstreamTags: `${B}\trefs/tags/v2.90.0\n${A}\trefs/tags/v2.89.0\n` }, { root, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
   const status = await tagged.check()
-  assert.equal(status.localTagVersion, 'v2.89.0', '本地 tag=describe --tags --exact-match 直读')
+  assert.equal(status.localTagVersion, 'v2.89.0', 'HEAD 恰为上游 tag 目标 sha → tag 名逐字（不依赖本地 clone tag 集）')
   assert.equal(status.upstreamTagVersion, 'v2.90.0', '上游 tag=ls-remote refs/tags/* 对 HEAD 的映射')
+
+  const decoRoot = await tempDir('tags-deco')
+  const deco = makeUpdater({ head: A, upstream: B, behind: '0', ahead: '1', ancestor: true, upstreamTag: 'v2.90.0' }, { root: decoRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  const decoStatus = await deco.check()
+  assert.equal(decoStatus.localTagVersion, `v2.90.0-1-g${A.slice(0, 7)}`, '家装提交骑在发布 commit 之上 → describe 风格装饰形如实透出（现势 d77d1a3 案）')
 
   const sameRoot = await tempDir('tags-same')
   const same = makeUpdater({ head: B, upstream: B, upstreamTag: 'v2.90.0' }, { root: sameRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })

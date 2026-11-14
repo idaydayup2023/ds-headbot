@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-11-14
+
+### Fixed
+
+- LiteLLM upgrade card follows the 2026-11-14 install migration: the default venv anchor moved from `…/DeepSeekHarnessMaintenance/litellm-20261022/venv` (physically deleted) to `~/ai/litellm/venv`, with the uv installer landing on `~/ai/litellm/bin/uv` as before. Anchoring the old path made the version read-back die with `spawn …/venv/bin/litellm ENOENT`, blanking `currentVersion` and freezing the upgrade button. A regression case pins the defaults to the new home and forbids any stale maintenance anchor.
+
 ## [0.4.18] - 2026-11-14
 
 ### Fixed

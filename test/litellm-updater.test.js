@@ -254,3 +254,40 @@ test('UI-003: a pip-less venv fails honestly at the installer preflight — no f
   // 唯一一次 spawn=冒烟本体；freeze/install/回退一条未发。
   assert.deepEqual(calls, [['/venv/bin/pip', '--version']])
 })
+
+test('default anchors follow the 2026-11-14 migration home (~/ai/litellm)', () => {
+  // 迁移实锤：旧 …/DeepSeekHarnessMaintenance/litellm-20261022 树已物理删除，默认锚滞留旧径时
+  // 版本回读 spawn ENOENT → currentVersion=null、升级钮冻死（11-14 21:4x 卡面活体实录）。
+  const root = path.join(os.tmpdir(), 'litellm-default-anchors')
+  // uv 分支由 existsImpl 谓词决定——显式注入，不让断言依赖跑机现场（本机有 uv、CI runner 没有）。
+  const updater = new LitellmGatewayUpdater({
+    manager: { root, parentHome: path.join(root, 'parent') },
+    existsImpl: file => file === path.join(os.homedir(), 'ai', 'litellm', 'bin', 'uv'),
+    config: { launchdLabel: 'com.test.litellm' },
+  })
+  assert.equal(updater.venvDir, path.join(os.homedir(), 'ai', 'litellm', 'venv'))
+  assert.equal(updater.litellmBin, path.join(os.homedir(), 'ai', 'litellm', 'venv', 'bin', 'litellm'))
+  assert.equal(updater.uvBin, path.join(os.homedir(), 'ai', 'litellm', 'bin', 'uv'))
+  assert.equal(updater.installCmd[0], updater.uvBin)
+  assert.equal(updater.installCmd.at(-1), 'litellm==<target>')
+  assert.match(updater.freezeCmd.join(' '), /pip freeze/)
+  assert.doesNotMatch(JSON.stringify(updater), /litellm-20261022/, 'no stale maintenance anchor may survive')
+  // 覆盖腿仍活：显式 config / env 优先于默认锚。
+  const overridden = new LitellmGatewayUpdater({
+    manager: { root, parentHome: path.join(root, 'parent') },
+    config: { venvDir: '/elsewhere/venv', launchdLabel: 'com.test.litellm' },
+  })
+  assert.equal(overridden.venvDir, '/elsewhere/venv')
+  const previousEnv = process.env.LITELLM_VENV_DIR
+  process.env.LITELLM_VENV_DIR = '/from/env/venv'
+  try {
+    const fromEnv = new LitellmGatewayUpdater({
+      manager: { root, parentHome: path.join(root, 'parent') },
+      config: { launchdLabel: 'com.test.litellm' },
+    })
+    assert.equal(fromEnv.venvDir, '/from/env/venv')
+  } finally {
+    if (previousEnv === undefined) delete process.env.LITELLM_VENV_DIR
+    else process.env.LITELLM_VENV_DIR = previousEnv
+  }
+})

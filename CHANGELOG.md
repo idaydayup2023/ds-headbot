@@ -4,6 +4,12 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.22] - 2026-11-15
+
+### Changed
+
+- UI-007 (user directive 2026-11-15 06:4x, two items): every state.message-class copy is removed from the five version cards — no 已升级到…/正在安装…/升级进行中/上次升级失败/重启提示/批量进度 rows any more; the busy state is expressed by the button label 升级中 alone. The hidden block line now carries only check/probe errors and the reasons the API returns on a blocked or failed request (error reasons, not status prose — the UI-006 verbatim gate-reason leg is untouched). And each card is compressed into a single row — 组件名 + 安装版本：xxxx + buttons (升级/打开) on one flex line — with the block/patch-pending lines hanging below, hidden by default.
+
 ## [0.4.21] - 2026-11-15
 
 ### Fixed

@@ -72,6 +72,40 @@ test('check degrades honestly on GitHub rate limit', async () => {
   assert.match(status.checkError, /限流/)
 })
 
+// UI-008 root-cause leg（总务照准 backlog 转正）：releases/latest/list 腿带 token——
+// 读取序 config.githubToken → LITELLM_UPGRADE_GITHUB_TOKEN → GITHUB_TOKEN；全无则匿名不回归。
+test('UI-008: the LiteLLM releases leg carries the token from config/env and stays anonymous without one', async () => {
+  const root = await tempDir('gh-token')
+  const seen = []
+  const capture = async (_url, options = {}) => {
+    seen.push(options.headers ?? {})
+    return { ok: true, status: 200, json: async () => ({ tag_name: 'v1.107.0-stable', html_url: 'https://github.example/release', draft: false, prerelease: false }) }
+  }
+  const saved = { litellm: process.env.LITELLM_UPGRADE_GITHUB_TOKEN, gh: process.env.GITHUB_TOKEN }
+  delete process.env.LITELLM_UPGRADE_GITHUB_TOKEN; delete process.env.GITHUB_TOKEN
+  try {
+    const viaConfig = makeUpdater({ root, fetchImpl: capture, patchManifest: path.join(root, 'missing.manifest.json'), config: { githubToken: 'tok-config' } })
+    await viaConfig.check()
+    assert.equal(seen[0].Authorization, 'Bearer tok-config', 'config 面 token 必须上请求头')
+    process.env.LITELLM_UPGRADE_GITHUB_TOKEN = 'tok-env-litellm'
+    const viaEnv = makeUpdater({ root, fetchImpl: capture, patchManifest: path.join(root, 'missing.manifest.json') })
+    await viaEnv.check()
+    assert.equal(seen[1].Authorization, 'Bearer tok-env-litellm', 'LITELLM_UPGRADE_GITHUB_TOKEN env 生效')
+    delete process.env.LITELLM_UPGRADE_GITHUB_TOKEN
+    process.env.GITHUB_TOKEN = 'tok-env-gh'
+    const viaGh = makeUpdater({ root, fetchImpl: capture, patchManifest: path.join(root, 'missing.manifest.json') })
+    await viaGh.check()
+    assert.equal(seen[2].Authorization, 'Bearer tok-env-gh', 'GITHUB_TOKEN 通用兜底生效')
+    delete process.env.GITHUB_TOKEN
+    const anon = makeUpdater({ root, fetchImpl: capture, patchManifest: path.join(root, 'missing.manifest.json') })
+    await anon.check()
+    assert.equal(seen[3].Authorization, undefined, '无 token 保持匿名（不回归）')
+  } finally {
+    if (saved.litellm === undefined) delete process.env.LITELLM_UPGRADE_GITHUB_TOKEN; else process.env.LITELLM_UPGRADE_GITHUB_TOKEN = saved.litellm
+    if (saved.gh === undefined) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = saved.gh
+  }
+})
+
 test('patch gate passes a matching baseline and blocks drifted files or missing checks', async () => {
   const root = await tempDir('gate')
   const target = path.join(root, 'site-packages', 'least_busy.py')

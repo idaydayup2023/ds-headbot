@@ -38,8 +38,9 @@ export function apply(ctx, config = {}) {
     launchdLabel: config.launchdLabel,
     pnpmCommand: config.pnpmCommand,
     dshCommand: manager.dshCommand,
+    githubToken: config.githubToken,
   })
-  const runtimeUpdater = new HeadbotRuntimeUpdater({ manager, logger: ctx.logger, dshCommand: manager.dshCommand })
+  const runtimeUpdater = new HeadbotRuntimeUpdater({ manager, logger: ctx.logger, dshCommand: manager.dshCommand, githubToken: config.githubToken })
   // LITELLM-UPGRADE-UI-001: version card + audited upgrade for the shared 8888 inference gateway.
   // Degrades to a read-only "cannot read" card on machines without the gateway; set
   // config.litellmUpdate.enabled === false to hide the routes entirely.

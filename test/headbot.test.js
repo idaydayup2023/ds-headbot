@@ -12,6 +12,7 @@ import { apply as applyHeadbot, handleApiRequest, version as headbotVersion } fr
 import { apply as applyTeam } from '../lib/team-plugin.js'
 import { renderManagerPage } from '../lib/page.js'
 import { HeadbotReleaseUpdater, compareVersions, performHeadbotUpdate } from '../lib/release-updater.js'
+import { HeadbotRuntimeUpdater } from '../lib/runtime-updater.js'
 import { startIngress } from '../lib/ingress.js'
 import { runInNewContext } from 'node:vm'
 import { add, fixture, online, port, quiet } from './helpers.js'
@@ -361,6 +362,24 @@ function htmlSeed(key) {
   return { disabled: Boolean(tag) && /\sdisabled\b/.test(tag[0]), hidden: Boolean(tag) && /\shidden\b/.test(tag[0]) }
 }
 
+// UI-008（用户 2026-11-15 严格卡面令）：卡面除「安装版本：xxxxx」+按钮外零动态文字输出——
+// checkError/闸门理由/请求失败话术一律不落卡，只进审计与 API 数据面。断言口径：mock DOM 里
+// （含动态创建的 children）任何节点的可见文本都不得含注入话术；版本行白名单不受影响。
+function collectDomText(elements) {
+  const seen = []
+  const walk = node => {
+    if (!node || typeof node !== 'object') return
+    seen.push(String(node.textContent ?? ''))
+    for (const child of node.children ?? []) walk(child)
+  }
+  for (const el of elements.values()) walk(el)
+  return seen.join('\n')
+}
+function assertNoCardProse(elements, needles, label) {
+  const blob = collectDomText(elements)
+  for (const needle of needles) assert.ok(!blob.includes(needle), `${label}：「${needle}」不得出现在卡面任何节点`)
+}
+
 test('browser highlights a newer Headbot release and starts the upgrade on click', async () => {
   const elements = new Map(), handlers = new Map()
   let upgradeRequests = 0
@@ -475,7 +494,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   pollPromise = poll[1].callback()
   await new Promise(resolve => setImmediate(resolve))
   await pollPromise
-  assert.equal(elements.get('#dsh-block').textContent, '', 'UI-007①：重启窗口期卡面零话术（busy 只由按钮表达）')
+  assertNoCardProse(elements, ['DSH 正在重启', '正在安装', 'connection reset', '版本检查失败'], 'UI-008：重启窗口期卡面零话术（busy 只由按钮表达）')
   assert.equal(dshButton().disabled, true, 'while restarting the button must stay rendered as 升级中')
 
   updateState = 'completed'
@@ -486,7 +505,7 @@ test('browser keeps DSH upgrade visible while the service restarts and reports c
   await new Promise(resolve => setImmediate(resolve))
   await pollPromise
   assert.equal(elements.get('#dsh-version').textContent, '安装版本：v0.2.1-rc.3')
-  assert.equal(elements.get('#dsh-block').textContent, '')
+  assertNoCardProse(elements, ['已升级到', '正在安装', 'connection reset'], 'UI-008：成功相与断线窗口卡面零话术')
   // UI-006 ③: success removes the node entirely — 不是 hidden，DOM 无节点.
   assert.equal(dshButton(), undefined, '升级成功后按钮节点必须从 DOM 移除')
 })
@@ -513,11 +532,15 @@ test('UI-006: card faces carry only the canonical name and one install-version l
   // ③ 两枚「打开」按钮（用户给定 URL 字面）
   assert.match(html, /id="litellm-open"[^>]*href="http:\/\/192\.168\.1\.5:8888\/ui"/)
   assert.match(html, /id="sparkdash-open"[^>]*href="http:\/\/192\.168\.1\.5:5555"/)
-  // UI-007②：卡面压成一行——组件名 + 安装版本 + 按钮，同一 cardline 三元素；hidden block 行是唯一行下挂
+  // UI-007②：卡面压成一行——组件名 + 安装版本 + 按钮，同一 cardline 三元素。
+  // UI-008（2026-11-15 严格卡面）：cardline 之外什么都不留——五枚 block 行与 BALANCE-001
+  // pending 行整体撤出卡面，section 里只允许 cardline 一个容器（script/注释外零节点）。
+  const bareHtml = html.replace(/<script>[\s\S]*?<\/script>/g, '').replace(/<!--[\s\S]*?-->/g, '')
   for (const [id, name] of [['headbot', 'DS HeadBot'], ['dsbot', 'DS Bot'], ['dsh', 'DeepSeek Harness'], ['litellm', 'LiteLLM'], ['sparkdash', 'SparkDash']]) {
-    assert.match(html, new RegExp(`<div class="cardline"><h2>${name}</h2><p class="small version-values"><span id="${id}-version">安装版本：[\\s\\S]*?<div class="actions">[\\s\\S]*?</div></div>`), `${name} 卡面必须是单行三元素（名+安装版本+按钮）`)
-    assert.match(html, new RegExp(`<p id="${id}-block" class="small" hidden></p>`), `${name} 的 block 行默认 hidden 且不带静态话术`)
+    assert.match(bareHtml, new RegExp(`<section class="card version-card" id="${id}-version-card">\\s*<div class="cardline"><h2>${name}</h2><p class="small version-values"><span id="${id}-version">安装版本：[\\s\\S]*?<div class="actions">[\\s\\S]*?</div></div>\\s*</section>`), `${name} 卡面必须只有单行三元素（名+安装版本+按钮）`)
+    assert.ok(!bareHtml.includes(`id="${id}-block"`), `${name} 的 block 行必须整体绝迹（UI-008：检查错误/闸门理由只进 API 面）`)
   }
+  assert.ok(!bareHtml.includes('litellm-patch-pending'), 'BALANCE-001 pending 提示行必须撤出卡面（md5Declared 读数只留 gate.details API 面）')
   // UI-007①：state.message 类执行结果/进度话术绝不上卡面（busy 只有按钮文字「升级中」表达）
   for (const gone of ['已升级到', '正在安装', '正在逐个更新', '正在下载并安装', '正在准备升级', '升级进行中', '升级后 DSH', '安装完成，请重启', '上次升级失败', '上次升级未完成', 'DSH 正在重启', '批量更新中断', '所有实例的 DS Bot 已更新', '正在按实况单升级', '升级中…', '主 DSH 实例最后更新'])
     assert.ok(!html.includes(gone), `${gone} — state.message/status prose must never reach the card face`)
@@ -571,7 +594,7 @@ test('UI-006: the upgrade button renders only while an update exists, labels the
     })
     await new Promise(resolve => setImmediate(resolve))
     await new Promise(resolve => setImmediate(resolve))
-    observed[phase] = { button: elements.get('#upgrade-litellm-slot').children.find(child => child.id === 'upgrade-litellm') || null, version: elements.get('#litellm-version'), block: elements.get('#litellm-block') }
+    observed[phase] = { button: elements.get('#upgrade-litellm-slot').children.find(child => child.id === 'upgrade-litellm') || null, version: elements.get('#litellm-version'), elements }
   }
   // ① 无新版 → 按钮不渲染（DOM 无节点）；安装版本行如实
   assert.equal(observed.latest.version.textContent, '安装版本：1.106.2')
@@ -585,16 +608,18 @@ test('UI-006: the upgrade button renders only while an update exists, labels the
   assert.ok(observed.busy.button, 'busy keeps the node rendered')
   assert.equal(observed.busy.button.textContent, '升级中')
   assert.equal(observed.busy.button.disabled, true)
-  assert.equal(observed.busy.block.hidden, true, 'UI-007①：state.message「正在安装」不得上卡面')
+  // UI-008：busy 相 state.message「正在安装」零出现（block 行已整体绝迹，卡面只余按钮+版本行）
+  assertNoCardProse(observed.busy.elements, ['正在安装', 'state.message'], 'UI-008：busy 相卡面零话术')
   // ④ 成功 → 按钮节点从 DOM 移除，版本行翻到新装版，且「已升级到…」话术不上卡面
   assert.equal(observed.success.version.textContent, '安装版本：1.109.1')
   assert.equal(observed.success.button, null, 'after success the button node must be removed from the DOM')
-  assert.equal(observed.success.block.hidden, true, 'UI-007①：state.message「已升级到」不得上卡面')
+  // UI-008：成功相「已升级到」话术零出现
+  assertNoCardProse(observed.success.elements, ['已升级到'], 'UI-008：成功相卡面零话术')
 })
 
-// UI-006 边界：前端废确认 ≠ 后端放松。blocked 态按钮仍渲染且恒可点，闸门理由由 API 返回、卡面
-// 如实呈（litellm 补丁闸门/sparkDash 脏改闸门的原文必须逐字可见）。
-test('UI-006: a blocked upgrade stays clickable and the card reports the gate reason verbatim', async () => {
+// UI-006 边界 + UI-008 严格卡面：前端废确认 ≠ 后端放松。blocked 态按钮仍渲染且恒可点、按下必达
+// 后端；闸门理由由 API 返回（409 error 体），但卡面一个字的理由都不落——只进 console/API 数据面。
+test('UI-006/UI-008: a blocked upgrade stays clickable, the backend keeps the gate, and the reason stays off the card', async () => {
   const elements = new Map(), handlers = new Map()
   function element(key = 'created') {
     const classes = new Set()
@@ -642,8 +667,7 @@ test('UI-006: a blocked upgrade stays clickable and the card reports the gate re
   await click('upgrade-litellm')
   assert.equal(upgradePosts, 1, 'one-step: the press reaches the backend, which owns the gate')
   assert.equal(litellmBtn().disabled, false, 'after the 409 the button must stay clickable (恒可点重试)')
-  assert.equal(elements.get('#litellm-block').hidden, false)
-  assert.match(elements.get('#litellm-block').textContent, /补丁基线档案缺失/, 'the card must show the gate reason verbatim')
+  assertNoCardProse(elements, ['补丁基线档案缺失', '升级闸门未通过', '版本检查失败', 'manifest'], 'UI-008：闸门理由只留 API 面，卡面 409 后依旧静默')
   // 一步腿自证：ack 由页面代填（用户按下即授权），目标版本随体上送
   assert.equal(lastBody.acknowledgeOutage, true)
   assert.equal(lastBody.targetVersion, '1.109.1')
@@ -679,8 +703,136 @@ test('UI-006: a blocked upgrade stays clickable and the card reports the gate re
   })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(greenElements.get('#litellm-patch-pending').hidden, false, 'gate passed but md5 not declared → the pending-patch notice must show')
-  assert.equal(greenElements.get('#litellm-block').hidden, true, 'a passing gate must not print block copy')
+  // UI-008：gate 转绿后 md5Declared=false 的 BALANCE-001 候窗读数只留 API 数据面——
+  // 卡面零 pending 话术；API 面字段仍在（巡检靠它），绝不造假。
+  assertNoCardProse(greenElements, ['补丁尚未实装', 'BALANCE-001', '未含补丁', '三连闸'], 'UI-008：pending 提示撤出卡面')
+  const greenApi = litellmStatus()
+  assert.equal(greenApi.gate.details[0].md5Declared, false, 'md5Declared 候窗读数必须仍在 API 面供巡检')
+  assert.equal(greenApi.gate.passed, true)
+})
+
+// UI-008（用户 2026-11-15 原令实物案）：用户活体抓到的正是这枚——LiteLLM 卡渲染
+// 「版本检查失败：GitHub API 限流，请稍后手动刷新或配置 LITELLM_UPGRADE_GITHUB_TOKEN。」
+// 新令：检查失败时卡面安静停着——五卡全部喂限流样 checkError/上游错/请求异常，卡面零出现；
+// 白名单「安装版本：xxxxx」行与按钮不受影响。
+test('UI-008: injected rate-limit check errors never reach the card face — the cards sit silent', async () => {
+  const elements = new Map(), handlers = new Map()
+  function element(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', checked: false, ...htmlSeed(key), href: '', children: [], open: false,
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const document = {
+    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+    createElement(tag) { return element(tag) },
+  }
+  const RATE_COPY = 'GitHub API 限流，请稍后手动刷新或配置 LITELLM_UPGRADE_GITHUB_TOKEN'
+  const source = renderManagerPage({ version: '0.4.22' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
+    FormData: class { constructor() {} get() { return '' } },
+    async fetch(url) {
+      if (url.includes('/litellm')) return { status: 200, ok: true, async json() { return { currentVersion: '1.109.1', currentError: null, latestVersion: null, updateAvailable: false, state: 'idle', checkError: RATE_COPY, gate: { passed: true, reasons: [], details: [] }, canUpgrade: false } } }
+      if (url.includes('/release')) return { status: 200, ok: true, async json() { return { currentVersion: '0.4.22', latestVersion: null, updateAvailable: false, state: 'completed', checkError: 'GitHub release check returned HTTP 403（限流）' } } }
+      if (url.includes('/runtime-versions')) return { status: 200, ok: true, async json() { return { dsh: { currentVersion: '0.2.2-rc.3', latestVersion: null, updateAvailable: false, canUpdate: true, state: 'idle', checkError: 'GitHub releases returned HTTP 403 限流' }, dsBot: { latestVersion: null, instances: [{ id: 'default', name: '保障组', currentVersion: '0.3.6', status: 'running' }], updateAvailable: false, checkError: RATE_COPY } } } }
+      if (url.includes('/sparkdash')) return { status: 200, ok: true, async json() { return { deployed: true, upstreamHead: '24daeb57390a33b414cec214200625b0a3dcb736', upstreamError: 'git ls-remote 失败：Could not resolve host（限流窗口）', upstreamTagVersion: 'v2.90.0', localTagVersion: 'v2.90.0-1-gd77d1a3', local: { commit: 'd77d1a3d8b81d6f7283d82fcf91c567b95af75d9', dirty: false, dirtyCount: 0 }, updateAvailable: false, state: 'idle', gate: { passed: true, reasons: [] } } } }
+      if (url.includes('/models')) return { status: 200, ok: true, async json() { return { models: [] } } }
+      if (url.includes('/audit')) return { status: 200, ok: true, async json() { return { events: [], nextBefore: null } } }
+      return { status: 200, ok: true, async json() { return { teams: [] } } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  // ① 注入话术全灭：限流/403/上游探测失败/版本检查失败 一律不落卡面任何节点
+  assertNoCardProse(elements, ['限流', 'HTTP 403', '请稍后手动刷新', '上游探测失败', '版本检查失败', 'Could not resolve host'], 'UI-008：检查失败话术注入案')
+  // ② 白名单行不受牵连：五枚安装版本行照常如实（版本行是卡面唯一文本+按钮）
+  assert.equal(elements.get('#headbot-version').textContent, '安装版本：v0.4.22')
+  assert.equal(elements.get('#dsbot-version').textContent, '安装版本：v0.3.6')
+  assert.equal(elements.get('#dsh-version').textContent, '安装版本：v0.2.2-rc.3')
+  assert.equal(elements.get('#litellm-version').textContent, '安装版本：1.109.1')
+  assert.equal(elements.get('#sparkdash-version').textContent, '安装版本：v2.90.0-1-gd77d1a3')
+  // ③ 无新版=五 slot 无按钮节点（检查失败不造钮）
+  for (const slotId of ['#upgrade-headbot-slot', '#update-all-slot', '#upgrade-dsh-slot', '#upgrade-litellm-slot', '#upgrade-sparkdash-slot'])
+    assert.equal((elements.get(slotId)?.children ?? []).length, 0, `${slotId} 无新版即无节点`)
+})
+
+// UI-008 请求异常腿：端点整个抛错（网络断/服务挂）→ 版本行退「安装版本：无法读取」，卡面仍零话术。
+test('UI-008: a hard request failure leaves the version line honest and the card otherwise silent', async () => {
+  const elements = new Map(), handlers = new Map()
+  function element(key = 'created') {
+    const classes = new Set()
+    return {
+      key, style: {}, textContent: '', value: '', checked: false, ...htmlSeed(key), href: '', children: [], open: false,
+      classList: { toggle(name, force) { if (force) classes.add(name); else classes.delete(name) }, remove(name) { classes.delete(name) }, contains(name) { return classes.has(name) } },
+      addEventListener(type, handler) { handlers.set(`${this.id||key}:${type}`, handler) },
+      append(...children) { this.children.push(...children) }, replaceChildren(...children) { this.children = [...children] },
+      querySelector() { return null },
+    }
+  }
+  const document = {
+    querySelector(key) { if (!elements.has(key)) elements.set(key, element(key)); return elements.get(key) },
+    createElement(tag) { return element(tag) },
+  }
+  const source = renderManagerPage({ version: '0.4.22' }).match(/<script>([\s\S]*?)<\/script>/)[1]
+  runInNewContext(source, {
+    document, window: { location: { origin: 'https://localhost' } }, setInterval() {}, setTimeout() { return 0 }, clearTimeout() {},
+    FormData: class { constructor() {} get() { return '' } },
+    async fetch(url) {
+      if (url.includes('/release') || url.includes('/litellm') || url.includes('/sparkdash') || url.includes('/runtime-versions')) throw new Error('HTTP 503 检查 Headbot 新版本失败：GitHub release check returned HTTP 403')
+      if (url.includes('/models')) return { status: 200, ok: true, async json() { return { models: [] } } }
+      if (url.includes('/audit')) return { status: 200, ok: true, async json() { return { events: [], nextBefore: null } } }
+      return { status: 200, ok: true, async json() { return { teams: [] } } }
+    },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(elements.get('#headbot-version').textContent, '安装版本：无法读取')
+  assert.equal(elements.get('#litellm-version').textContent, '安装版本：无法读取')
+  assert.equal(elements.get('#sparkdash-version').textContent, '安装版本：无法读取')
+  // 抛错原文（含 503/403 话术）不落卡面——console 之外零呈现
+  assertNoCardProse(elements, ['HTTP 503', '检查 Headbot 新版本失败', 'HTTP 403', '无法读取：'], 'UI-008：请求异常话术注入案')
+})
+
+// UI-008 root-cause leg（总务照准 backlog 转正）：GitHub 检查腿有 token 则带 Authorization，
+// 无 token 行为不回归（匿名照旧）。token 值纪律=只进配置/env，绝不入代码/日志/审计。
+test('UI-008: the GitHub release checks attach the configured token and stay anonymous without one', async () => {
+  const saved = { token: process.env.GITHUB_TOKEN, headbot: process.env.HEADBOT_UPGRADE_GITHUB_TOKEN, dsh: process.env.DSH_UPGRADE_GITHUB_TOKEN }
+  delete process.env.GITHUB_TOKEN; delete process.env.HEADBOT_UPGRADE_GITHUB_TOKEN; delete process.env.DSH_UPGRADE_GITHUB_TOKEN
+  try {
+    const seenHeaders = []
+    const manager = { root: '/tmp/headbot-token-test', parentHome: '/tmp/headbot-token-home' }
+    const fetchImpl = async (url, options = {}) => {
+      seenHeaders.push(options.headers ?? {})
+      // releases/latest（headbot）吃对象体，DSH releases?per_page 腿吃数组体——按 URL 分流
+      const body = String(url).includes('per_page')
+        ? [{ tag_name: 'dsh-v9.9.9', published_at: '2026-11-15T00:00:00Z', draft: false }]
+        : { tag_name: 'v9.9.9', published_at: '2026-11-15T00:00:00Z', draft: false, prerelease: false, target_commitish: 'main' }
+      return { ok: true, status: 200, async json() { return body } }
+    }
+    const release = new HeadbotReleaseUpdater({ currentVersion: '0.4.22', manager, fetchImpl, githubToken: 'tok-release' })
+    await release.fetchLatest()
+    assert.equal(seenHeaders[0].Authorization, 'Bearer tok-release', '配置的 token 必须上请求头')
+    const anon = new HeadbotReleaseUpdater({ currentVersion: '0.4.22', manager, fetchImpl })
+    await anon.fetchLatest()
+    assert.equal(seenHeaders[1].Authorization, undefined, '无 token 必须保持匿名原样（不回归）')
+    const runtime = new HeadbotRuntimeUpdater({ manager, fetchImpl, githubToken: 'tok-runtime' })
+    await runtime.fetchLatestDshRelease()
+    assert.equal(seenHeaders[2].Authorization, 'Bearer tok-runtime', 'DSH releases 腿同样吃 token')
+    // env 兜底：GITHUB_TOKEN 存在即生效（配置面缺位时）
+    process.env.GITHUB_TOKEN = 'tok-env'
+    const viaEnv = new HeadbotReleaseUpdater({ currentVersion: '0.4.22', manager, fetchImpl })
+    await viaEnv.fetchLatest()
+    assert.equal(seenHeaders[3].Authorization, 'Bearer tok-env', 'GITHUB_TOKEN env 兜底必须生效')
+  } finally {
+    for (const [key, value] of Object.entries({ GITHUB_TOKEN: saved.token, HEADBOT_UPGRADE_GITHUB_TOKEN: saved.headbot, DSH_UPGRADE_GITHUB_TOKEN: saved.dsh })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
 })
 
 test('manual DSH upgrade worker marks its updater invocation as user initiated', async t => {

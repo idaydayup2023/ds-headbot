@@ -4,6 +4,16 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.23] - 2026-11-15
+
+### Changed
+
+- **UI-008 strict card face (用户 2026-11-15 原令, 0.4.22 漏网收口):** the five version cards now render nothing beyond the component name, the single 安装版本 line and the buttons. The block lines (`#headbot-block`, `#dsbot-block`, `#dsh-block`, `#litellm-block`, `#sparkdash-block`) and the BALANCE-001 `#litellm-patch-pending` row are removed from the DOM entirely — check errors (the live trigger was a LiteLLM card printing "版本检查失败：GitHub API 限流…"), gate reasons, upstream probe failures and request-failure messages never reach the card face; those readouts live only in the API/audit data plane and the browser console (`window.console?.warn`, optional-chained so the sandboxed test harness stays safe). A failed check leaves the card sitting quietly on its version line; the upgrade button, when rendered, stays clickable and the backend still answers with the verbatim reason on the API. Tests add a prose-injection case (rate-limit copy fed to all five endpoints → zero card occurrence) and a hard-request-failure case (endpoint throws → version line honestly reads 安装版本：无法读取, no other prose).
+
+### Fixed
+
+- **GitHub checks carry an optional token (总务照准 backlog → 本版实现):** anonymous `api.github.com` calls hit the 60/h shared-egress rate limit (HTTP 403), which pinned `updateAvailable` to false (upgrade button never appeared) and made `POST /release/upgrade` 503 at its pre-check. `HeadbotReleaseUpdater`, `HeadbotRuntimeUpdater` (DSH releases leg) and `LitellmGatewayUpdater` now attach `Authorization: Bearer <token>` when a token is configured (config `githubToken` / `litellmUpdate.githubToken`, or env `GITHUB_TOKEN` / `HEADBOT_UPGRADE_GITHUB_TOKEN` / `DSH_UPGRADE_GITHUB_TOKEN` / `LITELLM_UPGRADE_GITHUB_TOKEN`), and stay byte-for-byte anonymous without one (no regression). The token value only ever comes from the config file or the process env — never hard-coded, never logged, never in argv/state/audit. New tests assert the header rides when configured and is absent otherwise.
+
 ## [0.4.22] - 2026-11-15
 
 ### Added

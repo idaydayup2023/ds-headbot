@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { AuditedCommunications } from '../lib/communications.js'
@@ -102,4 +102,106 @@ test('audit reads stay correct as the journal grows without retaining every even
   assert.equal(inbox.messages[0].text, input.text)
   assert.equal(reloaded.events, undefined)
   assert.equal(reloaded.messageIndex.length, 1)
+})
+
+// --- Sealed-segment rotation (audit finding P2) -----------------------------------------------------
+
+async function readJournalCheckpoint(broker) {
+  return JSON.parse(await readFile(broker.checkpoint, 'utf8'))
+}
+
+async function exists(file) {
+  try { await readFile(file); return true } catch { return false }
+}
+
+test('rotation seals a size-full delivered segment and offsets keep resolving across the seal', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const broker = new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 })
+  const bytes = Buffer.from([1, 2, 3, 4, 5])
+  const first = await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '第一轮 ' + 'x'.repeat(300), attachments: [{ name: 'a.bin', contentBase64: bytes.toString('base64') }] })
+  await broker.inbox(b)
+  for (let i = 0; i < 8; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `压力 ${i} ` + 'y'.repeat(300) })
+  await broker.inbox(b)
+  for (let i = 0; i < 8; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `二轮 ${i} ` + 'z'.repeat(300) })
+  await broker.inbox(b)
+  const checkpoint = await readJournalCheckpoint(broker)
+  assert.ok(checkpoint.segment >= 1, `expected a sealed rotation, got ${JSON.stringify(checkpoint)}`)
+  assert.ok(await exists(broker.journalFile(1)), 'sealed segment file audit.000001.jsonl exists')
+  // A restarted reader verifies the whole chain across segments and replays by offset.
+  const reloaded = new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 })
+  const audit = await reloaded.exportAudit()
+  assert.equal(audit.integrity, 'verified')
+  assert.deepEqual(audit.events.map(e => e.seq), audit.events.map((_, i) => i + 1), 'seq is gapless across segments')
+  const segments = new Set(reloaded.messageIndex.map(e => e.segment))
+  assert.ok(segments.size >= 2, `index spans sealed and active segments, got ${[...segments]}`)
+  const earliest = reloaded.messageIndex.find(e => e.seq === first.message.seq)
+  const latest = reloaded.messageIndex.at(-1)
+  for (const entry of [earliest, latest]) {
+    const reread = await reloaded.readIndexedEvent(entry)
+    assert.equal(reread.seq, entry.seq, 'offset read resolves inside the segment the entry names')
+  }
+  assert.deepEqual((await reloaded.attachment(b, first.message.messageId, first.message.attachments[0].id)).bytes, bytes)
+})
+
+test('undelivered messages pin their segment; rotation defers until delivery drains', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const broker = new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 })
+  for (let i = 0; i < 12; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `积压 ${i} ` + 'q'.repeat(300) })
+  assert.equal((await readJournalCheckpoint(broker)).segment, 0, 'undelivered backlog pins the active segment')
+  assert.equal(await exists(broker.journalFile(1)), false, 'no sealed segment while messages are pending')
+  await broker.inbox(b) // draining emits messages.received, which releases the pin
+  const after = await readJournalCheckpoint(broker)
+  assert.ok(after.segment >= 1, 'the sealed rotation lands right after delivery drains')
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '新段首条 ' + 'p'.repeat(100) })
+  assert.ok(await exists(broker.journalFile(1)), 'the next append lands in the freshly opened segment')
+})
+
+test('checkpoint records the segment and a rewound or missing segment fails closed', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const broker = new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 })
+  for (let i = 0; i < 8; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `轮转 ${i} ` + 'w'.repeat(300) })
+  await broker.inbox(b)
+  const checkpoint = await readJournalCheckpoint(broker)
+  assert.ok(checkpoint.segment >= 1)
+  assert.ok(Number.isSafeInteger(checkpoint.seq) && typeof checkpoint.hash === 'string')
+  await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '段二数据 ' + 'r'.repeat(300) }) // give the newest segment content
+  const live = await readJournalCheckpoint(broker)
+  // Bad restore #1: rewind the checkpoint over a non-empty newest segment — its events then
+  // outrun the checkpoint coordinate and the chain check fails closed.
+  await writeFile(broker.checkpoint, JSON.stringify({ seq: live.seq, hash: live.hash, segment: live.segment - 1 }) + '\n')
+  await assert.rejects(new AuditedCommunications(manager.root, manager).exportAudit(), /replaced or truncated|checkpoint/, 'a rewound checkpoint fails closed')
+  // Bad restore #2: the newest segment file missing while the checkpoint still names it.
+  await writeFile(broker.checkpoint, JSON.stringify(live) + '\n')
+  await rm(broker.journalFile(live.segment), { force: true })
+  await assert.rejects(new AuditedCommunications(manager.root, manager).exportAudit(), /replaced or truncated|checkpoint/, 'a missing sealed segment fails the chain closed')
+})
+
+test('sealed segments are immutable while new appends land in later segments', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const broker = new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 })
+  for (let i = 0; i < 8; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `冻结 ${i} ` + 'v'.repeat(300) })
+  await broker.inbox(b) // drains, seals segment 0
+  for (let i = 0; i < 8; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `在写 ${i} ` + 't'.repeat(300) })
+  await broker.inbox(b) // drains, seals segment 1 — it is now frozen on disk
+  assert.ok((await readJournalCheckpoint(broker)).segment >= 2, 'segment 1 is sealed, not just large')
+  const sealedFile = broker.journalFile(1)
+  const frozen = await readFile(sealedFile)
+  for (let i = 0; i < 12; i++) await broker.send(a, { to: 'beta', requestId: randomUUID(), text: `续写 ${i} ` + 'u'.repeat(300) })
+  await broker.inbox(b)
+  assert.deepEqual(await readFile(sealedFile), frozen, 'the sealed segment never moved')
+  const audit = await new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 }).exportAudit()
+  assert.equal(audit.integrity, 'verified')
+  assert.ok(audit.events.length >= 22)
 })

@@ -127,6 +127,36 @@ test('push failures degrade to message.push-failed and never touch delivery', as
   assert.deepEqual((await broker.inbox(manager.identity(manager.findTeam('beta')))).messages.map(m => m.text), ['假端口注入'])
 })
 
+test('credential material (key/authorization/password/query) never lands in push-failed reasons', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  await seedLeadSession(manager, 'beta', 'session-lead-9')
+  const a = manager.identity(manager.findTeam('alpha'))
+  const broker = new AuditedCommunications(manager.root, manager)
+  // Model keys hide in endpoint queries and headers: safeReason must strip URL queries first,
+  // then mask credential-shaped assignments (audit finding P1-2).
+  const leaky = new Error('gateway 502 from http://127.0.0.1:8888/v1?key=sk-SECRET9182736455&user=ops '
+    + 'with authorization: Bearer abcDEF.ghiJKL-lmno== password=P@ssw0rdTopSecret token=tk-993')
+  const pusher = wirePusher(broker, manager, async () => { throw leaky })
+  const sent = await broker.send(a, { to: 'beta', requestId: randomUUID(), text: '凭据外泄面注入' })
+  assert.equal(sent.delivered, true)
+  await pusher.drain()
+  const audit = await broker.exportAudit()
+  assert.deepEqual(audit.events.map(event => event.type), ['message.sent', 'message.push-failed'])
+  const reason = audit.events[1].reason
+  for (const secret of ['sk-SECRET9182736455', 'abcDEF.ghiJKL-lmno==', 'P@ssw0rdTopSecret', 'tk-993', 'user=ops']) {
+    assert.ok(!reason.includes(secret), `reason must not carry ${secret}`)
+  }
+  // The key rode inside the URL query: query stripping removed it wholesale before the
+  // assignment masking even saw it — origin+path survive, everything after ? does not.
+  assert.match(reason, /Bearer \[redacted\]/)
+  assert.match(reason, /password=\[redacted\]/)
+  assert.match(reason, /token=\[redacted\]/)
+  assert.match(reason, /gateway 502/, 'diagnostic context itself stays readable')
+  assert.match(reason, /http:\/\/127\.0\.0\.1:8888\/v1\?\[redacted\]/, 'URL keeps origin+path, query stripped')
+})
+
 test('an unresolvable lead session skips the push with push-skipped(no-session), not a failure', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')

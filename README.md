@@ -1,7 +1,9 @@
 
 # DS Headbot
 
-Current package version: **0.4.9**. The manager shows current and latest versions for DS Headbot, DSH, and DS Bot. DSH and DS Bot upgrades are manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+Current package version: **0.4.24**. The manager shows current and latest versions for **DS Headbot**, **DS Bot**, **DeepSeek Harness**, **LiteLLM**, and **SparkDash**. Each card is deliberately quiet: one installed-version line plus buttons — an upgrade button appears only while a newer release exists (labelled **升级到 vX.Y.Z**), reads **升级中** while a detached worker runs, and disappears once the upgrade lands; check errors and gate reasons never render on the card, they stay in the audit and API data. DSH and DS Bot upgrades stay manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+
+Version checks call GitHub anonymously unless a token is configured (see `githubToken` under [Configuration](#configuration)); without one, the shared anonymous rate limit can make checks fail silently from the card's point of view.
 
 DS Headbot is a **DeepSeek Harness (DSH) bundle plugin** and the **upper-level manager for ds-bot**. Install it once in a DSH `web` profile to create and manage multiple independent DSH + ds-bot runtime instances from one shared DSH installation.
 
@@ -97,6 +99,10 @@ Use the manager to start, stop, or restart a team. The DS Bot version card check
 
 The **DS Headbot 版本** card checks the latest stable release from GitHub. When a newer version is available, **升级到 vX.Y.Z** becomes active. The updater downloads the tagged repository source, verifies that its package version matches the release tag, packs it locally, updates the controller's `web` profile, and keeps the prior package as a rollback artifact under the DSH user's Headbot data directory. On macOS it restarts the configured LaunchAgent (`com.deepseek.dsh` by default) so the new plugin is loaded. Other service managers can set `restartCommand` and `restartArgs` in the `ds-headbot` plugin config. Team workspaces and audit data remain in place. See [self-update and rollback](docs/self-update.md) for details.
 
+The **LiteLLM** card reports the version installed in the managed virtualenv (under `~/ai/litellm/venv` by default) against the latest upstream LiteLLM release. The upgrade button hands the work to a detached worker so the request path never blocks on pip: a configuration patch gate must read green before anything is installed, the install runs through the managed Python environment with a `uv` fallback, the launchd gateway is restarted and re-probed, and the previous pinned version is restored if verification fails. Gate detail and failure reasons are visible only through the management API and the audit journal.
+
+The **SparkDash** card tracks the local SparkDash checkout against its upstream repository. SparkDash publishes no GitHub releases, so the installed version is the tag that names the checked-out commit (for example `v2.90.0`), with the current commit shown as the honest fallback when the checkout sits on an untagged commit. An upgrade follows the repository runbook (fetch, check out the target commit, reinstall, restart), re-checks the dirty-worktree gate immediately before touching anything, and rolls the checkout back to the previous commit when any step fails; every outcome is audited.
+
 Deleting an instance stops its process, cancels automatic restarts, revokes its communication credential, removes its active definition, and moves its files to `<DSH_HOME>/headbot/archives/<team-id>-<instance-id>-<time>/`. The archive includes an owner-only `instance.json` definition for recovery. Runtime logs are retained under `logs/<team-id>-<instance-id>.log`. The UI requests confirmation and preserves the data. Recreating the same team ID creates a new identity and an empty inbox. Historical communication and attachment copies remain available to the controller's audit reviewer. For recovery, stop the controller, back up its data, restore the archived directory to `teams/<id>`, and restore its `instance.json` team entry to schema 2 `teams.json`, checking ID and port conflicts before restarting.
 
 ## Team communication and audit
@@ -110,13 +116,15 @@ Every managed instance loads the `ds-headbot-communications` DSH tool plugin thr
 | `headbot_receive_messages` | Read the durable inbox using a replay cursor |
 | `headbot_download_attachment` | Verify and save a received file under the DS Bot workspace's `inbox` |
 
-Messages are available immediately after durable audit storage, including when the receiving team is stopped. The receiving bot reads them with its inbox tool; this release does not automatically trigger a model run. Each instance gets a random credential; the broker derives the sender from it, and team credentials cannot access instance management or the controller's audit API.
+Messages are available immediately after durable audit storage, including when the receiving team is stopped. The receiving bot reads them with its inbox tool. When the recipient is online, an inbox push additionally wakes its lead Bot session at once — the session defaults to the first main bot recorded in the instance, or the team's explicit `pushSessionId` when set — using a single 3-second request against the instance's launch URL; a failed push is only an audit event, because the journal remains the single source of truth and the recipient's own polling still collects the message. Each instance gets a random credential; the broker derives the sender from it, and team credentials cannot access instance management or the controller's audit API.
 
 The manager page includes **团队通信审计**. Reviewers can filter by team, read full message text, download the exact archived attachment bytes, inspect SHA-256 values, and export the complete audit archive. Send, inbox read, attachment receipt, and reviewer download events are retained. An audit write failure blocks the corresponding transfer. The journal uses a hash chain and a checkpoint, and every read or write verifies them; attachment bytes are also verified before delivery.
 
 The protocol and HTTP contract are documented in [Team communication protocol](docs/communication-protocol.md). Defaults: 64 KiB of text, 8 attachments, 10 MiB per file, and 20 MiB of files per transfer. `communicationLimits` may lower these bounds.
 
-Audit files live under `<DSH_HOME>/headbot/communications/`, outside the plugin package and project checkouts. Back up the whole Headbot data directory, including `teams.json`, `feishu-secrets.json` (if present), `communications/audit.jsonl`, `communications/checkpoint.json`, and `communications/objects/`. Treat the Feishu credential file like a password vault. The API has no audit deletion operation. If integrity verification fails, preserve the files and investigate or restore a consistent backup before resuming transfers; deleting the journal to clear the error destroys the audit history.
+Audit files live under `<DSH_HOME>/headbot/communications/`, outside the plugin package and project checkouts. The journal is segmented so it can run for years without becoming one unbounded file: the active segment is `communications/audit.jsonl`, and once it reaches `journalRotateBytes` (default 8 MiB, ceiling 512 MiB, settable in `communicationLimits`) it is **sealed** and later appends move to `communications/audit.000001.jsonl`, `audit.000002.jsonl`, and so on. A sealed segment is never rewritten or deleted, and `communications/checkpoint.json` records the tip `seq`, `hash`, and `segment`, so every read verifies the whole chain across segments. While a message is still undelivered its segment stays active — rotation defers until delivery drains, which keeps replay offsets valid.
+
+Back up **by segment**, not by wiping the directory: copy `teams.json`, `feishu-secrets.json` (if present), every `communications/audit*.jsonl`, `communications/checkpoint.json`, and `communications/objects/` together into one consistent snapshot. Because sealed segments are immutable, an incremental backup only needs the new segments plus the current checkpoint. Treat the Feishu credential file like a password vault. The API has no audit deletion operation. If integrity verification fails, preserve the files and investigate or restore a consistent backup before resuming transfers; deleting the journal to clear the error destroys the audit history.
 
 ## Configuration
 
@@ -137,9 +145,16 @@ If changing the bundle's `config` in a Cordis patch, restate every field because
     botPackage: ds-bot
     inheritModelSettings: true
     teamPlugins: []
+    githubToken: <token>
+    communicationLimits:
+      journalRotateBytes: 8388608
 ```
 
 An optional `dshHome` setting can point Headbot at a non-default controller DSH home. Team data remains under `<dshHome>/headbot/`.
+
+`githubToken` authenticates the GitHub latest-version checks of the DS Headbot, DeepSeek Harness, and LiteLLM cards (SparkDash tracks its repository over `git`, which needs no token), so they no longer share the anonymous rate limit that can otherwise make checks fail and hide the upgrade button. Equivalent environment fallbacks, read in this order and honoured only when `githubToken` is unset: `HEADBOT_UPGRADE_GITHUB_TOKEN` / `GITHUB_TOKEN` (DS Headbot card), `DSH_UPGRADE_GITHUB_TOKEN` / `GITHUB_TOKEN` (DeepSeek Harness card), `LITELLM_UPGRADE_GITHUB_TOKEN` / `GITHUB_TOKEN` (LiteLLM card). The token value belongs in the patch config or the controller service environment only — never in code, logs, or the audit journal.
+
+`communicationLimits` tunes the communication broker: `textBytes`, `attachments`, `attachmentBytes`, `transferBytes`, and `journalRotateBytes` (audit segment size, default 8 MiB, ceiling 512 MiB; see [Team communication and audit](#team-communication-and-audit)).
 
 Keep team ports distinct from the controller port, ingress port, 80, and 443. Headbot validates team IDs and ports, stores definitions in `teams.json` with owner-only permissions, and refuses duplicate or reserved ports.
 

@@ -4,7 +4,20 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
-## [0.4.23] - 2026-11-15
+## [0.4.24] - 2026-11-15
+
+Third-party audit remediation release (用户 2026-11-15 交付的 0.4.22 审计单，五枚发现逐条亲验后整改；核验结论 F1 部分真 / F2 真 / F3 真 / F4 真 / F5 真).
+
+### Fixed
+
+- **F1 · runtime adoption across controller restarts (P1-1):** detached team children used to be managed from memory only — a controller restart lost the handles, `autoStart` would spawn a second process against the occupied port (refused by the pre-spawn port guard, leaving the team honestly `failed` with an unservable orphan still running), and `waitForListener` probed the port alone, so the live orphan's traffic could be attributed to a crashed fresh child. The manager now persists a `runtime-pids.json` ledger (mode 0600, atomic write) of `{ pid, generation, port, … }` at spawn, and `startTeam` first **adopts** a surviving ledger process — `kill(pid,0)` liveness, command-line identity (team root + `--port N`), and a live port probe must all agree — resuming monitoring without a second spawn; only when adoption fails does it spawn. An adopted runtime reports status through the normal generation path, `stopTeam` from a fresh controller really kills a ledger orphan (process-group terminate), and a monitored child that stops serving flips to `failed` with an explicit "Adopted runtime … stopped serving" note plus autoStart re-arm. Tests: adoption case, double-spawn case (ledger removed → honest `failed` + port-in-use message + zero fake ledger + orphan left alive), false-running case (SIGKILL the adopted child → `failed` with reason + ledger cleared), and a decoy-listener race case.
+- **F2 · inbox-push failure reasons scrubbed of credentials (P1-2):** `safeReason` only masked `token`/`secret`/`cookie` keys, so a model key carried in an endpoint query string or an `Authorization: Bearer …` header could land verbatim in the push failure audit line. It now strips URL query/fragment first, masks `key`/`authorization`/`password` (in addition to the originals) inside query strings and key=value pairs, and redacts Bearer values. Tests assert a leaky URL survives scrubbed.
+
+### Changed
+
+- **F3 · audit journal sealed-segment rotation (P2):** the communications journal (also the durable delivery queue) was pure append forever — no cap, and the README advised backing the whole directory up every time. The active segment rotates at `communicationLimits.journalRotateBytes` (default 8 MiB, ceiling 512 MiB) onto `audit.000001.jsonl`, `audit.000002.jsonl`, … : sealed segments are never rewritten or deleted, checkpoints carry the `segment` coordinate, every read verifies the whole chain across segments, and index entries name their segment so offset replays keep resolving. Undelivered messages pin their segment — rotation defers until delivery drains, keeping replay offsets valid; new segment files are created lazily on first append. `exportAudit` and the reviewer API keep their external shape (segment order is visible in the on-disk filenames). Tests: rotation + cross-segment export + offset replay, the delivery pin, checkpoint rewind/missing-segment fail-closed, and sealed-segment immutability under continued appends.
+- **F4 · swallowed errors leave one warn line (P3):** all 35 empty `catch {}` / `.catch(() => {})` sites in `lib/` now emit a single `[ds-headbot] <module>: ignored best-effort …` warn through the module logger (console fallback), keeping best-effort semantics — queue-keepalive and poll-loop sites dedupe per distinct failure so retries never spam. New `lib/observe.js` helpers are tested for the line format, the never-throw contract, the console fallback, once-per-distinct-failure dedupe, and queue recovery after a swallowed journaled failure.
+- **F5 · README brought current and welded shut (P3):** the README was pinned at 0.4.9 and said nothing about the LiteLLM/SparkDash cards, the strict card face, the GitHub token legs, inbox push, or journal rotation. All are documented now (including the per-card token environment fallbacks and the by-segment backup recipe), and a new lock test fails the suite whenever the README version line drifts from `package.json` or the 0.4.24 coverage probes disappear — the fifteen-release doc drift cannot recur.
 
 ### Changed
 

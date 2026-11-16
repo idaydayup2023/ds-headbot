@@ -19,6 +19,12 @@ test('the README version line is welded to package.json (release without doc syn
   assert.equal(match[1], pkg.version, 'README version matches package.json; bump both together')
 })
 
+test('the package lock is welded to package.json (the lock drifted to 0.4.10 for fourteen releases)', async () => {
+  const lock = JSON.parse(await readFile(path.join(root, 'package-lock.json'), 'utf8'))
+  assert.equal(lock.version, pkg.version, 'lockfile version matches package.json')
+  assert.equal(lock.packages[''].version, pkg.version, 'lockfile root package matches package.json')
+})
+
 test('every management card and its upgrade path is documented', () => {
   for (const card of ['DS Headbot', 'DS Bot', 'DeepSeek Harness', 'LiteLLM', 'SparkDash']) {
     assert.ok(readme.includes(card), `card ${card} is named in the README`)
@@ -36,4 +42,13 @@ test('the 0.4.24 feature set stays in the documentation', async () => {
   assert.match(readme, /journalRotateBytes/, 'the rotate size knob is documented')
   assert.match(readme, /Back up \*\*by segment\*\*/, 'backups are documented per segment, not as one growing file')
   assert.ok(!readme.includes('0.4.9'), 'the stale 0.4.9 version line is gone for good')
+})
+
+test('the 0.4.25 feature set stays in the documentation', () => {
+  assert.match(readme, /Team model settings inheritance/, 'the single-source inheritance section exists')
+  assert.match(readme, /model-inherited-/, 'the legacy-copy migration naming is documented')
+  assert.match(readme, /model-selection\.patch\.yml/, 'the generated team selection overlay is documented')
+  assert.match(readme, /model-override\.patch\.yml/, 'the explicit team override file is documented')
+  assert.match(readme, /adopted the still-serving/, 'the adoption log line is documented as on-disk-visible')
+  assert.match(readme, /input.*modalit/i, 'catalog input modalities are documented')
 })

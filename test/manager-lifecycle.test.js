@@ -171,3 +171,26 @@ test('waitForListener refuses to report ready for a dead child even while a deco
     await new Promise(resolve => live.once('exit', resolve))
   }
 })
+
+// F1-ADOPT-LOG (audit lesson P3): the adoption line must be visible on disk. Passing it only
+// to the host logger lands it in the Cordis in-memory ring, never in server.log — so the line
+// travels the double channel: host logger pass-through plus a real stdout print.
+test('the adoption path leaves a visible ledger line on both channels (F1-ADOPT-LOG)', async t => {
+  const { root, manager, fake } = await fixture(t)
+  await manager.createTeam({ id: 'delta', name: 'DELTA', port: await port(), autoStart: true })
+  await manager.startTeam('delta')
+  const ledger = JSON.parse(await readFile(path.join(root, 'headbot', 'runtime-pids.json'), 'utf8'))
+  const lines = []
+  const info = t.mock.method(console, 'info', () => {})
+  const revived = new HeadbotManager(
+    { dataDir: path.join(root, 'headbot'), dshHome: path.join(root, 'home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port() },
+    { parentPort: await port(), logger: { warn() {}, error() {}, info: line => lines.push(line) } },
+  )
+  t.after(() => revived.close())
+  await revived.initialize()
+  await revived.startTeam('delta')
+  assert.equal(revived.runtime.get('delta').pid, ledger.delta.pid, 'the still-serving process was adopted')
+  assert.match(lines.join('\n'), /^\[ds-headbot\] adopted the still-serving delta runtime \(pid \d+\)$/, 'the adoption line reaches the host logger')
+  const printed = info.mock.calls.map(call => call.arguments[0])
+  assert.match(printed.join('\n'), /^\[ds-headbot\] adopted the still-serving delta runtime \(pid \d+\)$/, 'and is printed — stdout is what launchd captures into server.log')
+})

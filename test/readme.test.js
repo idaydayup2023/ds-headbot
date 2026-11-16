@@ -37,3 +37,12 @@ test('the 0.4.24 feature set stays in the documentation', async () => {
   assert.match(readme, /Back up \*\*by segment\*\*/, 'backups are documented per segment, not as one growing file')
   assert.ok(!readme.includes('0.4.9'), 'the stale 0.4.9 version line is gone for good')
 })
+
+test('the 0.4.25 feature set stays in the documentation', () => {
+  assert.match(readme, /Team model settings inheritance/, 'the single-source inheritance section exists')
+  assert.match(readme, /model-inherited-/, 'the legacy-copy migration naming is documented')
+  assert.match(readme, /model-selection\.patch\.yml/, 'the generated team selection overlay is documented')
+  assert.match(readme, /model-override\.patch\.yml/, 'the explicit team override file is documented')
+  assert.match(readme, /adopted the still-serving/, 'the adoption log line is documented as on-disk-visible')
+  assert.match(readme, /input.*modalit/i, 'catalog input modalities are documented')
+})

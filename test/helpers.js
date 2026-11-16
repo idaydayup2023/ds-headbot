@@ -16,11 +16,20 @@ export async function port() {
 
 export async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-test-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
+  // teardown race: a stopped team's fake child can still be exiting while rm walks the tree
+  t.after(async () => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try { await rm(root, { recursive: true, force: true }); return }
+      catch (error) { if (error.code !== 'ENOTEMPTY' && error.code !== 'EBUSY') throw error; await new Promise(resolve => setTimeout(resolve, 100)) }
+    }
+    await rm(root, { recursive: true, force: true })
+  })
   const fake = path.join(root, 'fake-dsh.mjs')
   const pluginLog = path.join(root, 'plugin-commands.log')
+  const spawnLog = path.join(root, 'spawn-args.log')
   await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync,existsSync,appendFileSync} from 'node:fs';
 const args=process.argv.slice(2);if(args[0]==='plugin'){appendFileSync(${JSON.stringify(pluginLog)},args.join(' ')+'\\n');process.exit(0)}
+appendFileSync(${JSON.stringify(spawnLog)},args.join('\\n')+'\\n---\\n');
 const value=key=>args[args.indexOf(key)+1];
 if(!readFileSync(value('--patch'),'utf8').includes('team-plugin.js'))process.exit(2);
 if(!process.env.HEADBOT_TEAM_TOKEN||process.cwd()!==realpathSync(process.env.HEADBOT_TEAM_FILES_ROOT))process.exit(3);

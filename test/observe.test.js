@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { ignore, ignoreFailure, ignoreFailureOnce } from '../lib/observe.js'
+import { ignore, ignoreFailure, ignoreFailureOnce, infoLine } from '../lib/observe.js'
 import { AuditedCommunications } from '../lib/communications.js'
 import { add, fixture } from './helpers.js'
 
@@ -18,6 +18,23 @@ test('the console fallback keeps the clue when no logger is wired', t => {
   ignoreFailure(undefined, 'ingress', 'Location header rewrite', { message: 'Invalid URL' })
   assert.equal(warn.mock.callCount(), 1)
   assert.match(warn.mock.calls[0].arguments[0], /^\[ds-headbot\] ingress: ignored best-effort Location header rewrite failure: Invalid URL$/)
+})
+
+// F1-ADOPT-LOG: the DSH host's Cordis logger only fills an in-memory ring (no on-disk
+// exporter), so a line that merely travels there is invisible in server.log. Every
+// observability line must be passed through AND printed; stdout/stderr is what launchd captures.
+test('the double channel prints through even when the host logger exists', t => {
+  const lines = []
+  const warn = t.mock.method(console, 'warn', () => {})
+  ignoreFailure({ warn: line => lines.push(line) }, 'manager/lifecycle', 'best effort step', new Error('quiet'))
+  assert.equal(lines.length, 1, 'the host logger still receives its line')
+  assert.equal(warn.mock.callCount(), 1, 'the same line is printed for the on-disk record')
+  assert.match(warn.mock.calls[0].arguments[0], /^\[ds-headbot\] manager\/lifecycle: ignored best-effort best effort step failure: quiet$/)
+  const infos = []
+  const info = t.mock.method(console, 'info', () => {})
+  infoLine({ info: line => infos.push(line) }, '[ds-headbot] adopted the still-serving alpha runtime (pid 4242)')
+  assert.deepEqual(infos, ['[ds-headbot] adopted the still-serving alpha runtime (pid 4242)'])
+  assert.equal(info.mock.callCount(), 1, 'info lines reach stdout too')
 })
 
 test('poll-loop swears warn once per distinct failure, never per poll', () => {

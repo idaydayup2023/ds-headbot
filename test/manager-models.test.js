@@ -44,3 +44,22 @@ test('catalog maxTokens survives the validator and lands in the generated provid
   assert.throws(() => validateStoredModel({ id: 'bad', name: 'Bad', baseURL: 'http://127.0.0.1:11/v1', modelId: 'bad-1', maxTokens: 1.5 }), /maxTokens/)
   assert.throws(() => validateStoredModel({ id: 'bad', name: 'Bad', baseURL: 'http://127.0.0.1:11/v1', modelId: 'bad-1', maxTokens: 0 }), /maxTokens/)
 })
+
+test('catalog input modalities survive the validator and land in the generated provider entry (MODELS-INPUT-001)', async t => {
+  const { manager } = await fixture(t)
+  await manager.createModel({ id: 'eyes', name: 'Eyes', baseURL: 'http://127.0.0.1:9/v1', modelId: 'eyes-1', input: ['text', 'image'] })
+  await manager.createModel({ id: 'plain', name: 'Plain', baseURL: 'http://127.0.0.1:10/v1', modelId: 'plain-1' })
+  await manager.createModel({ id: 'junk', name: 'Junk', baseURL: 'http://127.0.0.1:12/v1', modelId: 'junk-1', input: ['text', 'holo'] })
+  assert.deepEqual(manager.models.find(model => model.id === 'eyes').input, ['text', 'image'])
+  assert.equal(manager.models.find(model => model.id === 'plain').input, undefined)
+  assert.equal(manager.models.find(model => model.id === 'junk').input, undefined, 'unknown modality words are dropped, not stored')
+  const home = path.join(manager.root, 'teams', 'input-team', 'home')
+  for (const id of ['eyes', 'plain', 'junk']) await manager.writeInstanceModelConfig(home, manager.models.find(model => model.id === id))
+  const providers = parse(await readFile(path.join(home, 'profiles/web/cordis.patch.yml'), 'utf8')).find(entry => entry.id === 'llm-pi-ai').config.providers
+  assert.deepEqual(providers.eyes.models, [{ id: 'eyes-1', input: ['text', 'image'] }])
+  assert.deepEqual(providers.plain.models, [{ id: 'plain-1' }])
+  assert.deepEqual(providers.junk.models, [{ id: 'junk-1' }])
+  // the load-side validator keeps modalities too, so a stored catalog round-trips them (models.js:181)
+  const stored = JSON.parse(await readFile(path.join(manager.root, 'models.json'), 'utf8'))
+  assert.deepEqual(validateStoredModel(stored.models.find(model => model.id === 'eyes')).input, ['text', 'image'])
+})

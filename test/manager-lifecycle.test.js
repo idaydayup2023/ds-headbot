@@ -194,3 +194,56 @@ test('the adoption path leaves a visible ledger line on both channels (F1-ADOPT-
   const printed = info.mock.calls.map(call => call.arguments[0])
   assert.match(printed.join('\n'), /^\[ds-headbot\] adopted the still-serving delta runtime \(pid \d+\)$/, 'and is printed — stdout is what launchd captures into server.log')
 })
+
+// TEAM-EXIT-LOG-001: birth, death, error and respawn lines of a team process must all reach
+// the double channel (host logger + stdout → server.log). Without them a crash+respawn window
+// (the 40048→48493 case) leaves zero trace on disk.
+test('team process birth, exit and auto-start respawn each leave a ledger line (TEAM-EXIT-LOG-001)', async t => {
+  const { manager } = await fixture(t)
+  const lines = []
+  manager.logger = { warn() {}, error() {}, info: line => lines.push(line) }
+  const printed = t.mock.method(console, 'info', () => {})
+  t.after(() => {
+    // disarm any pending respawn so teardown (and the process) can settle, even on failure
+    const tail = manager.runtime.get('gamma')
+    if (tail) { tail.explicitStop = true; clearTimeout(tail.restartTimer) }
+  })
+  const hasLine = pattern => lines.some(line => pattern.test(line))
+  const hasPrint = pattern => printed.mock.calls.some(call => pattern.test(String(call.arguments[0])))
+  await manager.createTeam({ id: 'gamma', name: 'GAMMA', port: await port(), autoStart: true })
+  await manager.startTeam('gamma')
+  const spawnedPid = manager.runtime.get('gamma').pid
+  assert.ok(hasLine(new RegExp(`^\\[ds-headbot\\] spawned gamma runtime \\(pid ${spawnedPid}, port \\d+\\)$`)), 'the birth line reaches the host logger')
+  assert.ok(hasPrint(new RegExp(`^\\[ds-headbot\\] spawned gamma runtime \\(pid ${spawnedPid}, port \\d+\\)$`)), 'and is printed — stdout is what launchd captures into server.log')
+  // crash the fake child: exit line + respawn decision line must follow
+  manager.runtime.get('gamma').child.kill('SIGKILL')
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.ok(hasLine(new RegExp(`^\\[ds-headbot\\] team gamma runtime exited \\(pid ${spawnedPid}, code n/a, signal SIGKILL\\)$`)), 'the death line names pid and signal')
+  assert.ok(hasLine(/^\[ds-headbot\] respawning gamma in \d+ms \(attempt 1\)$/), 'the respawn decision is logged too')
+  assert.ok(hasPrint(/^\[ds-headbot\] respawning gamma in \d+ms \(attempt 1\)$/), 'both travel the stdout channel as well')
+  // let the respawn fire and confirm a fresh birth line
+  await new Promise(resolve => setTimeout(resolve, 1200))
+  const secondPid = manager.runtime.get('gamma').pid
+  assert.ok(secondPid && secondPid !== spawnedPid, 'the team did respawn')
+  assert.ok(hasLine(new RegExp(`^\\[ds-headbot\\] spawned gamma runtime \\(pid ${secondPid}, port \\d+\\)$`)), 'the respawned process gets its own birth line')
+  manager.runtime.get('gamma').child.kill('SIGKILL')
+  await new Promise(resolve => setTimeout(resolve, 200)) // let the second exit land before teardown
+})
+
+test('a process-layer child error without an exit event still leaves a ledger line (TEAM-EXIT-LOG-001)', async t => {
+  const { manager } = await fixture(t)
+  const lines = []
+  manager.logger = { warn() {}, error() {}, info: line => lines.push(line) }
+  t.mock.method(console, 'info', () => {})
+  await manager.createTeam({ id: 'epsilon', name: 'EPSILON', port: await port(), autoStart: false })
+  await manager.startTeam('epsilon')
+  const child = manager.runtime.get('epsilon').child
+  t.after(() => { child.kill('SIGKILL') }) // even on assertion failure the stdio pipes must close
+  const pid = manager.runtime.get('epsilon').pid
+  child.emit('error', new Error('spawned died quietly'))
+  const errorPattern = new RegExp(`^\\[ds-headbot\\] team epsilon runtime process error \\(pid ${pid}\\): Error: spawned died quietly$`)
+  assert.ok(lines.some(line => errorPattern.test(line)), `the silent-error leg is no longer silent (lines=${JSON.stringify(lines)})`)
+  // the error leg only clears bookkeeping; close the stdio pipes so teardown can settle
+  child.kill('SIGKILL')
+  await new Promise(resolve => setTimeout(resolve, 200))
+})

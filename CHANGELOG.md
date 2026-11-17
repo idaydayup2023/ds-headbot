@@ -4,6 +4,13 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.27] - 2026-11-17
+
+A DS Bot update is no longer believed until the installed package version is read back and anchored to the npm registry.
+
+### Fixed
+- **DSBOT-UPDATE-VERIFY-001**: `updateBot` (the per-team **升级** button) now reads the on-disk `ds-bot` package version after the `dsh plugin update --latest` leg and anchors it to the registry latest dist-tag. The dsh CLI exits 0 even when pnpm's manifest-consistency pin silently keeps an older version — production incident 2026-11-17: five teams stayed at ds-bot 0.3.6 after "successful" 0.3.8 updates with zero on-disk trace. An unchanged version, an absent or unreadable package, or an unresolvable registry latest now marks the runtime failed with both versions in the message and an on-disk warn line, and `botInstalled` is never set true on an unverified install.
+
 ## [0.4.26] - 2026-11-17
 
 Management-page and lifecycle polish: the team card leads, the selection file is written by human intent only, the no-auto-upgrade contract is welded by tests, and every team process birth/death now leaves an on-disk line.

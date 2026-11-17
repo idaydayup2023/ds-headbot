@@ -209,6 +209,38 @@ test('release updater detects newer stable versions and launches a detached upda
   assert.equal((await updater.readState()).state, 'failed')
 })
 
+test('headbot install is reachable only through POST /release/upgrade and nothing schedules it (NO-AUTO-UPGRADE-001)', async t => {
+  const indexSource = await readFile(path.join(import.meta.dirname, '..', 'index.js'), 'utf8')
+  const updaterSource = await readFile(path.join(import.meta.dirname, '..', 'lib', 'release-updater.js'), 'utf8')
+  // The POST route is the single caller of the upgrade entry point.
+  assert.match(indexSource, /method === 'POST' && route === '\/release\/upgrade'[\s\S]{0,220}releaseUpdater\.startUpgrade\(\)/,
+    'POST /release/upgrade is wired to startUpgrade')
+  assert.equal((indexSource.match(/releaseUpdater\.startUpgrade\(/g) || []).length, 1,
+    'startUpgrade has exactly one caller: the POST /release/upgrade route')
+  // Install runs only inside the detached worker; the worker is spawned only from startUpgrade.
+  assert.equal((updaterSource.match(/this\.spawnImpl\(/g) || []).length, 1, 'one spawn site in the updater — the worker launch inside startUpgrade')
+  assert.equal((updaterSource.match(/\[WORKER_PATH,/g) || []).length, 1, 'the worker entry is launched from that site only')
+  assert.match(updaterSource, /if \(process\.argv\[1\] && path\.resolve\(process\.argv\[1\]\) === fileURLToPath\(import\.meta\.url\)\)/,
+    'performHeadbotUpdate is gated behind the worker main entry (only a spawn on itself runs it)')
+  // Nothing schedules an upgrade: no timers anywhere in the updater.
+  assert.equal((updaterSource.match(/setInterval\(/g) || []).length, 0, 'the updater arms no interval timers')
+  assert.equal((indexSource.match(/releaseUpdater\.startUpgrade/g) || []).length, 1)
+  // Behavioural leg: a fully successful check with a newer version on the shelf launches nothing.
+  const root = await mkdtemp(path.join(tmpdir(), 'headbot-noauto-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  let spawns = 0
+  const updater = new HeadbotReleaseUpdater({
+    currentVersion: '0.2.5',
+    manager: { root: path.join(root, 'headbot'), parentHome: path.join(root, 'dsh'), dshCommand: 'dsh', parentPort: 3080, controllerPath: 'dsh' },
+    fetchImpl: async () => ({ ok: true, status: 200, async json() { return { tag_name: 'v0.9.9', draft: false, prerelease: false } } }),
+    spawnImpl() { spawns += 1; return { once() { return this }, unref() {} } },
+  })
+  const status = await updater.check({ force: true })
+  assert.equal(status.updateAvailable, true, 'an upgrade is available yet untouched')
+  await new Promise(resolve => setTimeout(resolve, 25)) // let any stray timer tick
+  assert.equal(spawns, 0, 'no available-release check, cache refresh, or wait period ever installs on its own')
+})
+
 test('release API checks versions and queues the authenticated upgrade action', async () => {
   const calls = []
   const updater = {

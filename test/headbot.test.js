@@ -147,6 +147,23 @@ test('manager page shows the version updater and places teams before team creati
   new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
 })
 
+test('manager page renders the teams card before the model catalog card (CARD-ORDER-001)', () => {
+  const html = renderManagerPage({ publicHost: 'localhost', controllerPath: 'dsh', version: '0.4.26' })
+  const teamsAt = html.indexOf('<h2>团队实例</h2>')
+  const catalogAt = html.indexOf('<h2>模型目录</h2>')
+  assert.ok(teamsAt > -1, '团队实例 heading exists')
+  assert.ok(catalogAt > -1, '模型目录 heading exists')
+  assert.ok(teamsAt < catalogAt, '团队实例 card must render before 模型目录 card')
+  assert.equal((html.match(/<h2>团队实例<\/h2>/g) || []).length, 1, 'exactly one 团队实例 heading')
+  assert.equal((html.match(/<h2>模型目录<\/h2>/g) || []).length, 1, 'exactly one 模型目录 heading')
+  // Whole-section swap only: both card interiors and their anchors stay intact, in card order.
+  for (const anchor of ['id="add-form"', 'id="teams"', 'id="model-catalog-card"', 'id="add-model"', 'id="model-list"']) {
+    assert.ok(html.includes(anchor), `${anchor} must remain present`)
+  }
+  assert.ok(html.indexOf('id="add-form"') < catalogAt, 'teams form belongs to the teams card (before catalog)')
+  assert.ok(html.indexOf('id="add-model"') > catalogAt, 'add-model belongs to the catalog card (after its heading)')
+})
+
 test('release updater detects newer stable versions and launches a detached update worker', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'headbot-release-test-'))
   t.after(() => rm(root, { recursive: true, force: true }))

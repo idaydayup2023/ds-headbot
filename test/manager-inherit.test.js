@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { parse } from 'yaml'
@@ -196,4 +196,111 @@ test('inherit case 8: a stub that later gains a model entry is still retired by 
   assert.ok(!entries.includes('cordis.patch.yml'), 'the grown model copy is retired on sight')
   assert.equal(entries.filter(name => name.startsWith('cordis.patch.yml.model-inherited-') && name.endsWith('.bak')).length, 1)
   assert.ok((await lstat(path.join(teamHome(manager, 'grow'), 'cordis.patch.yml'))).isSymbolicLink())
+})
+
+// SEL-FORM-001 (case B): the selection overlay is written only by explicit edits.
+// While a team matches the controller's pick, the inherited single source carries the
+// choice; stale overlays retire to .model-selection-inherited-<ts>.bak under the same
+// content gate discipline as the model-copy migration leg (3a41e2c family).
+
+const selFile = (manager, id) => path.join(manager.root, 'teams', id, 'model-selection.patch.yml')
+const selBaks = async (manager, id) => (await readdir(path.join(manager.root, 'teams', id)))
+  .filter(name => name.startsWith('model-selection.patch.yml.model-selection-inherited-') && name.endsWith('.bak'))
+
+test('SEL-FORM case 1: a team on the controller pick never grows a selection overlay (spawn carries none)', async t => {
+  const { manager, root } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager) // parent/controller pick: spark/qwen-vision
+  await add(manager, 'equal')
+  const team = manager.findTeam('equal')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'spark'))
+  await manager.ensureInstanceModel(team)
+  await manager.ensureInstanceModel(team) // a second ensure pass must not mint one either
+  await assert.rejects(access(selFile(manager, 'equal')), { code: 'ENOENT' }, 'no overlay while the team equals the controller pick')
+  await manager.startTeam('equal')
+  assert.equal((await manager.getTeam('equal')).status, 'running')
+  assert.ok(!(await lastSpawnPatches(root)).includes(selFile(manager, 'equal')), 'spawn carries no selection overlay')
+  await manager.stopTeam('equal')
+})
+
+test('SEL-FORM case 2: an explicit unequal pick mints the overlay and survives later ensure passes', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager)
+  await manager.createModel({ id: 'glm', name: 'GLM', baseURL: 'http://192.168.1.9:8889/v1', modelId: 'glm-5.3-flash', input: ['text', 'image'] })
+  await add(manager, 'switch')
+  const team = manager.findTeam('switch')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'glm'))
+  assert.deepEqual(parse(await readFile(selFile(manager, 'switch'), 'utf8')), [{ id: 'agent-default-model', config: { provider: 'glm', model: 'glm-5.3-flash' } }], 'editing mints the overlay with the team pick')
+  await manager.ensureInstanceModel(team)
+  assert.match(await readFile(selFile(manager, 'switch'), 'utf8'), /glm-5\.3-flash/, 'ensure keeps an explicit override in place')
+  assert.equal((await selBaks(manager, 'switch')).length, 0)
+})
+
+test('SEL-FORM case 3: re-editing back to the controller pick retires the stale overlay to a .bak, never silently', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager)
+  await manager.createModel({ id: 'glm', name: 'GLM', baseURL: 'http://192.168.1.9:8889/v1', modelId: 'glm-5.3-flash', input: ['text', 'image'] })
+  await add(manager, 'roundtrip')
+  const team = manager.findTeam('roundtrip')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'glm'))
+  const written = await readFile(selFile(manager, 'roundtrip'), 'utf8')
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'spark'))
+  await assert.rejects(access(selFile(manager, 'roundtrip')), { code: 'ENOENT' }, 'the equal pick leaves no overlay')
+  const baks = await selBaks(manager, 'roundtrip')
+  assert.equal(baks.length, 1, 'the retired overlay is kept as a .bak')
+  assert.equal(await readFile(path.join(manager.root, 'teams', 'roundtrip', baks[0]), 'utf8'), written, 'the .bak keeps the retired pick byte for byte')
+})
+
+test('SEL-FORM case 4: unparseable stale overlays retire conservatively with every byte kept', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager)
+  await add(manager, 'junk')
+  const team = manager.findTeam('junk')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'spark'))
+  const junk = 'not: [valid yaml\n'
+  await writeFile(selFile(manager, 'junk'), junk)
+  await manager.ensureInstanceModel(team)
+  await assert.rejects(access(selFile(manager, 'junk')), { code: 'ENOENT' }, 'the unparseable overlay is retired')
+  const baks = await selBaks(manager, 'junk')
+  assert.equal(baks.length, 1)
+  assert.equal(await readFile(path.join(manager.root, 'teams', 'junk', baks[0]), 'utf8'), junk, 'the .bak keeps every byte of the unparseable file')
+})
+
+test('SEL-FORM case 5: non-selection entries and drifting picks stay on disk untouched', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager)
+  await add(manager, 'keep')
+  const team = manager.findTeam('keep')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'spark'))
+  await writeFile(selFile(manager, 'keep'), '- id: ui-chat\n  config: {}\n')
+  await manager.ensureInstanceModel(team)
+  assert.match(await readFile(selFile(manager, 'keep'), 'utf8'), /transcriptView|ui-chat/, 'a non-selection overlay is not retired')
+  assert.equal((await selBaks(manager, 'keep')).length, 0)
+  await writeFile(selFile(manager, 'keep'), '- id: agent-default-model\n  config:\n    provider: glm\n    model: glm-5.3-flash\n')
+  await manager.ensureInstanceModel(team) // ledger says equal, overlay drifts — keep for a human call
+  assert.match(await readFile(selFile(manager, 'keep'), 'utf8'), /glm-5\.3-flash/, 'a drifting pick is not retired')
+  assert.equal((await selBaks(manager, 'keep')).length, 0)
+})
+
+test('SEL-FORM case 6: the management readout reads the ledger, not the overlay file', async t => {
+  const { manager } = await fixture(t)
+  manager.inheritModelSettings = true
+  await seedParent(manager)
+  await manager.createModel({ id: 'glm', name: 'GLM', baseURL: 'http://192.168.1.9:8889/v1', modelId: 'glm-5.3-flash', input: ['text', 'image'] })
+  await add(manager, 'readout')
+  const team = manager.findTeam('readout')
+  await manager.provisionHome(team)
+  await manager.applyTeamModel(team, manager.models.find(model => model.id === 'glm'))
+  assert.equal((await manager.getTeam('readout')).modelName, 'GLM', 'the ledger-backed readout follows the explicit pick')
+  await rm(selFile(manager, 'readout'), { force: true }) // the readout must not depend on the overlay file
+  assert.equal((await manager.getTeam('readout')).modelName, 'GLM', 'the readout still reads teams.json, not the overlay')
 })

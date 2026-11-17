@@ -4,6 +4,23 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.26] - 2026-11-17
+
+Management-page and lifecycle polish: the team card leads, the selection file is written by human intent only, the no-auto-upgrade contract is welded by tests, and every team process birth/death now leaves an on-disk line.
+
+### Changed
+
+- **CARD-ORDER-001 · team card before model catalog (用户 2026-11-16 21:5x 亲令):** on the manager page the 团队实例 card now renders before the 模型目录 card — the two `<section>` blocks swapped as wholes, card internals and ids untouched, the floating `#error` node staying in its DOM slot between them. Tests: an order lock over the rendered HTML asserts `团队实例` precedes `模型目录`, each `<h2>` appears exactly once (no duplicated-card false green) and the card internals stayed attached to the right card; reverting the order reddens the lock.
+- **SEL-FORM-001 · the selection file is written only when someone edits the choice:** `model-selection.patch.yml` used to be (re)written unconditionally on seeding and on every ensure pass, so every team carried a generated selection file even when nobody had ever picked a model. The generation path is now intent-gated: the ensure/seed legs call the new `syncTeamModelSelection` helper, which on an equal-to-parent pick writes nothing and retires a stale generated file to `model-selection.patch.yml.model-selection-inherited-<timestamp>.bak`; the explicit 编辑 leg still always writes a differing pick — and honours a human decision to switch back to the parent's model by retiring the file then too. Migration discipline matches the 0.4.25 content gate: unparseable files retire conservatively byte-for-byte to `.bak`, an empty stub at the bottom layer stays, entries other than `agent-default-model` are never touched, and a file/content drift in the background ensure path is left in place for a human to judge rather than silently rewritten. The management page's 当前模型 readout was verified to come from the teams ledger (`state.js`), not from the selection file, so retiring the file cannot dim the card. Tests: six cases — ensure no-write on equal pick, differing pick writes, explicit switch back retires with `.bak`, unparseable conservative migration, stub untouched, ledger-based readout survives selection-file deletion — plus three counter-proof blades (remove the ensure gate / the retire leg / the unparseable migration and the matching cases redden).
+
+### Added
+
+- **NO-AUTO-UPGRADE-001 · the install path is reachable only from the upgrade button (weld, tests only):** on-disk inventory confirmed the single write path — `startUpgrade` has exactly one caller (`POST /release/upgrade`), the detached worker is spawned from exactly one site inside it, `performHeadbotUpdate` only runs under the `argv[1] === WORKER_PATH` self-execution guard, and no updater installs a timer. This release welds that truth so it cannot rot: source-truth assertions over those call sites plus a behavioural negative leg (a check that sees a newer release does not spawn anything within the tick window). Counter-proof blades — a second caller, an auto-upgrade interval, a second spawn site — each redden the suite.
+
+### Fixed
+
+- **TEAM-EXIT-LOG-001 · vanished team processes now leave a trace:** the 40048 silent-exit post-mortem showed the manager had no process-lifecycle lines at all — a child that died via its `error` event never reached the `close`/exit handler, so `server.log` held zero rows and even a health-leg respawn (40048→48493) left nothing on disk. The lifecycle now prints four lines on the same double channel as the 0.4.25 adoption line: birth (`spawned <team> runtime (pid …, port …)`), death (`team <team> runtime exited (pid …, code/signal …)` or the error cause), the respawn decision (`respawning <team> in <delay>ms (attempt n)`), and the previously silent process-`error` leg. Tests: a live spawn/crash/respawn walk asserts every line on both channels, and an error-event case asserts its line — removing any single line reddens its blade.
+
 ## [0.4.25] - 2026-11-16
 
 Model single-source release: the IMG-VISION-001 post-mortem lines up all three drift legs, teams now truly inherit the parent model settings, and the adoption path leaves a visible on-disk line.

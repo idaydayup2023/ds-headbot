@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
@@ -246,4 +246,69 @@ test('a process-layer child error without an exit event still leaves a ledger li
   // the error leg only clears bookkeeping; close the stdio pipes so teardown can settle
   child.kill('SIGKILL')
   await new Promise(resolve => setTimeout(resolve, 200))
+})
+
+// --- DSBOT-UPDATE-VERIFY-001 ----------------------------------------------------------------------------
+// The dsh CLI exits 0 even when the package manager silently keeps an older ds-bot
+// version (pnpm consistency pin, production incident 2026-11-17). updateBot must read
+// the on-disk package version back and anchor it to the registry latest before it
+// believes the install — botInstalled may never be set true on an unverified package.
+async function seedBotPackage(manager, id, version) {
+  const dir = path.join(manager.root, 'teams', id, 'home', 'profiles', 'web', 'node_modules', 'ds-bot')
+  await mkdir(dir, { recursive: true })
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'ds-bot', version }))
+}
+
+function registryLatest(manager, version) {
+  manager.fetchImpl = async () => ({ ok: true, json: async () => ({ version }) })
+}
+
+test('updateBot fails a zero-exit update whose package version never moved (DSBOT-UPDATE-VERIFY-001)', async t => {
+  const { manager, pluginLog } = await fixture(t)
+  await add(manager, 'pinned')
+  await seedBotPackage(manager, 'pinned', '0.3.6')
+  await manager.startTeam('pinned')
+  assert.equal(manager.findTeam('pinned').botInstalled, true, 'start provisioned the install')
+  registryLatest(manager, '0.3.8')
+  await assert.rejects(manager.updateBot('pinned'), { message: /still at 0\.3\.6 after the update while the latest version is 0\.3\.8/ })
+  assert.equal(manager.runtime.get('pinned').phase, 'failed', 'the failed phase must be visible on the card')
+  assert.match(manager.runtime.get('pinned').message, /0\.3\.6/, 'the failed message must carry both versions')
+  assert.equal(manager.findTeam('pinned').botInstalled, true, 'the install flag survives because the package was installed before the failed update')
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot/, 'the dsh leg still ran and exited 0')
+})
+
+test('updateBot completes and starts the team when the package version matches the registry latest', async t => {
+  const { manager, pluginLog } = await fixture(t)
+  await add(manager, 'current')
+  await seedBotPackage(manager, 'current', '0.3.8')
+  registryLatest(manager, '0.3.8')
+  await manager.updateBot('current')
+  assert.equal(manager.findTeam('current').botInstalled, true)
+  const running = await manager.getTeam('current')
+  assert.equal(running.status, 'running', running.message)
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web add ds-bot/)
+  // second round: the update branch must not false-fail on the legitimate `update --latest` no-op
+  await manager.updateBot('current')
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot/)
+  assert.equal((await manager.getTeam('current')).status, 'running')
+})
+
+test('updateBot fails when the package is absent from the profile despite a zero-exit add', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'ghost')
+  registryLatest(manager, '0.3.8')
+  await assert.rejects(manager.updateBot('ghost'), { message: /not present in the profile/ })
+  assert.equal(manager.findTeam('ghost').botInstalled, false)
+  assert.equal(manager.runtime.get('ghost').phase, 'failed')
+})
+
+test('updateBot fails verification when the registry latest cannot be resolved', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'offline')
+  await seedBotPackage(manager, 'offline', '0.3.8')
+  manager.fetchImpl = async () => { throw new Error('registry offline') }
+  await assert.rejects(manager.updateBot('offline'), { message: /cannot resolve the latest ds-bot version/ })
+  assert.equal(manager.findTeam('offline').botInstalled, false)
+  assert.equal(manager.runtime.get('offline').phase, 'failed')
+  assert.match(manager.runtime.get('offline').message, /registry offline/)
 })

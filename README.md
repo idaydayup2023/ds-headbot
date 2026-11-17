@@ -1,7 +1,7 @@
 
 # DS Headbot
 
-Current package version: **0.4.26**. The manager shows current and latest versions for **DS Headbot**, **DS Bot**, **DeepSeek Harness**, **LiteLLM**, and **SparkDash**. Each card is deliberately quiet: one installed-version line plus buttons — an upgrade button appears only while a newer release exists (labelled **升级到 vX.Y.Z**), reads **升级中** while a detached worker runs, and disappears once the upgrade lands; check errors and gate reasons never render on the card, they stay in the audit and API data. DSH and DS Bot upgrades stay manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
+Current package version: **0.4.27**. The manager shows current and latest versions for **DS Headbot**, **DS Bot**, **DeepSeek Harness**, **LiteLLM**, and **SparkDash**. Each card is deliberately quiet: one installed-version line plus buttons — an upgrade button appears only while a newer release exists (labelled **升级到 vX.Y.Z**), reads **升级中** while a detached worker runs, and disappears once the upgrade lands; check errors and gate reasons never render on the card, they stay in the audit and API data. DSH and DS Bot upgrades stay manual from the version cards; DS Bot has one button to update every instance in sequence. This manager does not upgrade DSH or DS Bot automatically. Any separate host-level update scheduler is configured independently.
 
 Version checks call GitHub anonymously unless a token is configured (see `githubToken` under [Configuration](#configuration)); without one, the shared anonymous rate limit can make checks fail silently from the card's point of view.
 

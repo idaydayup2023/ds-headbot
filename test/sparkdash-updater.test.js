@@ -159,25 +159,25 @@ test('identical SHAs read "HEAD 一致" — never a semver-fabricated green', as
   assert.equal(status.canUpgrade, false)
 })
 
-test('dirty worktree blocks the upgrade, lands in audit, and stays fail-closed when unreadable', async () => {
+// UPGRADE-002 改变了本案的语义：脏改不再阻断升级（worker 侧自动 stash/pop），卡面闸放行并把
+// 「将自动暂存」如实写进 notes。fail-closed 的职责移到 worker 复检腿（git status 不可读即败）。
+test('dirty worktree no longer gates the upgrade; the card declares the auto-stash in notes', async () => {
   const root = await tempDir('dirty')
   const updater = makeUpdater({ head: A, upstream: B, behind: '2', porcelain: ' M nodes.sh\n?? start.sh\n' }, { root, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
   const status = await updater.check()
   assert.equal(status.local.dirty, true)
-  assert.equal(status.local.dirtyCount, 2)
-  assert.equal(status.gate.blockedBy, 'dirty-worktree')
-  assert.equal(status.canUpgrade, false)
-  await assert.rejects(updater.startUpgrade(upgradeBody()), error => error.statusCode === 409 && /脏改闸门/.test(error.message))
-  const audit = await readAudit(root)
-  assert.equal(audit[0].action, 'upgrade-blocked')
-  assert.equal(audit[0].gate.blockedBy, 'dirty-worktree')
-  assert.match(audit[0].gate.reasons[0], /nodes\.sh/)
+  assert.equal(status.local.dirtyCount, 2, 'the dirty facts stay honestly reported on the card')
+  assert.equal(status.gate.passed, true, 'UPGRADE-002: dirty worktrees are auto-stashed by the worker, not blocked')
+  assert.equal(status.canUpgrade, true)
+  assert.ok((status.notes || []).some(note => note.includes('自动暂存') && note.includes('2')), 'notes must declare the pending auto-stash with the entry count')
+  await updater.startUpgrade(upgradeBody())
+  assert.equal(updater.spawned.length, 1, 'the upgrade launches instead of a 409 block')
 
   const rootBlind = await tempDir('dirty-blind')
   const blind = makeUpdater({ head: A, upstream: B, behind: '2', statusThrows: 'fatal: not a git repository' }, { root: rootBlind, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
   const blindStatus = await blind.check()
-  assert.equal(blindStatus.gate.blockedBy, 'dirty-worktree', 'an unreadable worktree counts as dirty (fail-closed)')
-  assert.equal(blindStatus.canUpgrade, false)
+  assert.equal(blindStatus.local.dirty, true, 'an unreadable worktree still counts as dirty (fail-closed reporting)')
+  assert.ok((blindStatus.notes || []).some(note => note.includes('无法确认') && note.includes('阻断')), 'the card honestly declares the unreadable worktree and its fail-closed fate')
 })
 
 test('missing checkout reports 未部署 honestly and refuses upgrades with 503', async () => {
@@ -356,15 +356,41 @@ test('string runbook steps (B④ 照抄即用) run via /bin/sh with <target_sha>
   assert.equal(state.state, 'completed')
 })
 
-function workerRunner({ stepFailAt = -1, finalHead, rollbackHead, dirtyBefore = '' } = {}) {
+function workerRunner({ stepFailAt = -1, finalHead, rollbackHead, dirtyBefore = '', behind = '0', ahead = '0', ancestor = true, rebaseFails = false, stashList = '', popFails = false, patchShas = '' } = {}) {
   const calls = []
   let rolled = false
+  let stashedOnce = false
   let stepIndex = 0
   return Object.assign(async (command, args) => {
     calls.push([command, ...args])
     if (command === 'git' && args[0] === 'status') return { stdout: dirtyBefore, stderr: '' }
+    // SPARKDASH-UPGRADE-002 legs: auto-stash / ahead-detection / ancestor gate / auto-rebase.
+    if (command === 'git' && args[0] === 'stash' && args[1] === 'push') { stashedOnce = true; return { stdout: '', stderr: '' } }
+    if (command === 'git' && args[0] === 'stash' && args[1] === 'list') return { stdout: stashList, stderr: '' }
+    if (command === 'git' && args[0] === 'stash' && args[1] === 'pop') {
+      if (popFails) throw new Error('git stash pop exited with code 1: CONFLICT (content): merge conflict')
+      stashedOnce = false
+      return { stdout: '', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'rev-list' && args[1] === '--count') {
+      const range = String(args[2] || '')
+      return { stdout: `${range.startsWith('HEAD..') ? behind : ahead}\n`, stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'rev-list') return { stdout: `${patchShas}\n`, stderr: '' }
+    if (command === 'git' && args[0] === 'merge-base') {
+      if (!ancestor) throw new Error('fatal: merge-base --is-ancestor exited with code 1')
+      return { stdout: '', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'rebase') {
+      if (args[1] === '--abort') return { stdout: '', stderr: '' }
+      if (rebaseFails) throw new Error('git rebase exited with code 1: could not apply local patch')
+      return { stdout: '', stderr: '' }
+    }
     if (command === 'git' && args[0] === 'rev-parse') return { stdout: `${rolled ? rollbackHead : finalHead}\n`, stderr: '' }
     if (command === 'git' && args[0] === 'checkout') { rolled = true; return { stdout: '', stderr: '' } }
+    // The UPGRADE-002 preflight fetch (`fetch origin <branch>`) never consumes stepFailAt slots:
+    // the runbook step counter stays reserved for the plan's own steps.
+    if (command === 'git' && args[0] === 'fetch' && args.length === 3) return { stdout: '', stderr: '' }
     if (command === 'git' && (args[0] === 'fetch' || args[0] === 'merge')) {
       if (stepIndex === stepFailAt) throw new Error(`step failed: git ${args.join(' ')}`)
       stepIndex += 1
@@ -388,6 +414,7 @@ async function workerConfig(root, plan = PLAN) {
     plan,
     beforeCommit: A,
     targetCommit: B,
+    transactionId: 'tx-test-001',
     stateFile: path.join(root, 'sparkdash-update-state.json'),
     auditFile: path.join(root, 'sparkdash-upgrade-audit.jsonl'),
     logFile: path.join(root, 'sparkdash-update.log'),
@@ -428,24 +455,30 @@ test('worker failing mid-runbook rolls back with git checkout and audits the fai
   process.exitCode = 0
 })
 
-test('worker re-checks the dirty gate before touching anything (check→exec window)', async () => {
+// SPARKDASH-UPGRADE-002 semantics change: a dirty worktree no longer blocks the worker — the
+// dirty entries ride an auto-stash tagged with the transaction id. The old fail-closed re-check
+// case becomes the auto-stash round-trip case (full ① leg matrix lives in the UPGRADE-002 block).
+test('worker auto-stashes a dirty worktree (tx-tagged) instead of blocking, then completes', async () => {
   const root = await tempDir('worker-dirty')
-  const runner = workerRunner({ finalHead: B, dirtyBefore: ' M src/app.jsx\n' })
+  const runner = workerRunner({ finalHead: B, dirtyBefore: ' M src/app.jsx\n', stashList: 'stash@{0}	On main: auto-upgrade tx-test-001 (1 entries)' })
   await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
-  assert.ok(!runner.calls.some(call => call[1] === 'fetch' || call[0] === 'npm'), 'no runbook step may run on a dirty worktree')
+  assert.ok(runner.calls.some(call => call.join(' ') === 'git stash push --include-untracked -m auto-upgrade tx-test-001 (1 entries)'), 'dirty entries must ride an auto-stash tagged with the transaction id')
+  assert.ok(runner.calls.some(call => call[1] === 'fetch' || call[0] === 'npm'), 'the runbook may run once the worktree is clean via auto-stash')
   const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
-  assert.equal(state.state, 'failed')
-  assert.match(state.message, /未提交改动/)
+  assert.equal(state.state, 'completed')
+  const audit = await readAudit(root)
+  assert.equal(audit[0].action, 'upgrade-completed')
+  assert.equal(audit[0].stashed, true)
   process.exitCode = 0
 })
 
-test('worker HEAD read-back mismatch counts as failure, not a completed lie', async () => {
+test('worker HEAD read-back gate fails when HEAD does not descend from the target, not a completed lie', async () => {
   const root = await tempDir('worker-head')
-  const runner = workerRunner({ finalHead: 'd'.repeat(40), rollbackHead: A })
+  const runner = workerRunner({ finalHead: 'd'.repeat(40), rollbackHead: A, ancestor: false })
   await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
   const audit = await readAudit(root)
   assert.equal(audit[0].action, 'upgrade-failed')
-  assert.match(audit[0].reason, /HEAD 回读不符/)
+  assert.match(audit[0].reason, /HEAD 回读门未过/)
   assert.equal(audit[0].rolledBack, true)
   process.exitCode = 0
 })
@@ -488,4 +521,100 @@ test('UI-006 tag version: upstream tag mapping + ancestry decoration, honest unt
   const bareStatus = await bare.check()
   assert.equal(bareStatus.localTagVersion, null, '无 tag 不造假版本')
   assert.equal(bareStatus.upstreamTagVersion, null)
+})
+
+// ─── SPARKDASH-UPGRADE-002（2026-11-18 用户亲批根治案）锁定块 ───────────────────────────
+// 升级腿三处改造的锁定案：①脏改自动 stash/pop（stash 件带事务 id 可追溯归位，pop 冲突停人工
+// 裁决+审计详情）②ahead 本地补丁自动 rebase（替代 ff-only 炸 Diverging，冲突 abort 复原走败退）
+// ③回读门严等→ancestor（补丁在头不再假败，补丁 SHA 入审计）。验收母本=11-18 人肉归置全流程。
+const C = 'c'.repeat(40)
+
+test('UPGRADE-002 ①a: completed run auto-pops the tx-tagged stash (round trip)', async () => {
+  const root = await tempDir('u2-pop-ok')
+  const runner = workerRunner({ finalHead: B, dirtyBefore: ' M config/settings.json\n', stashList: 'stash@{0}	On main: auto-upgrade tx-test-001 (1 entries)' })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(runner.calls.some(call => call.join(' ') === 'git stash pop stash@{0}'), 'the tx-tagged entry found by stash list must be popped on success')
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'completed')
+  assert.ok(!state.message.includes('人工裁决'), 'a clean pop leaves no human-adjudication flag')
+  const audit = await readAudit(root)
+  assert.equal(audit[0].action, 'upgrade-completed')
+  assert.equal(audit[0].stashed, true)
+  assert.equal(audit[0].stashPopNote, null)
+  assert.equal(audit[0].transactionId, 'tx-test-001')
+})
+
+test('UPGRADE-002 ①b: a conflicting auto-pop keeps completed but files an audit adjudication line', async () => {
+  const root = await tempDir('u2-pop-conflict')
+  const runner = workerRunner({ finalHead: B, dirtyBefore: ' M config/settings.json\n', stashList: 'stash@{0}	On main: auto-upgrade tx-test-001 (1 entries)', popFails: true })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'completed', 'the upgrade itself landed — a pop conflict must not flip it')
+  assert.match(state.message, /停在人工裁决/)
+  const audit = await readAudit(root)
+  assert.deepEqual(audit.map(e => e.action), ['stash-pop-conflict', 'upgrade-completed'])
+  assert.equal(audit[0].stashRef, 'stash@{0}')
+  assert.equal(audit[0].transactionId, 'tx-test-001')
+  assert.match(audit[0].detail, /CONFLICT/)
+})
+
+test('UPGRADE-002 ①c: a clean worktree never touches the stash stack', async () => {
+  const root = await tempDir('u2-clean')
+  const runner = workerRunner({ finalHead: B })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(!runner.calls.some(call => call[0] === 'git' && call[1] === 'stash'), 'no dirty entries, no stash push/pop/list')
+  const audit = await readAudit(root)
+  assert.equal(audit[0].action, 'upgrade-completed')
+  assert.equal(audit[0].stashed, false)
+})
+
+test('UPGRADE-002 ②a: diverging ahead-patch is auto-rebased onto the target before the runbook', async () => {
+  const root = await tempDir('u2-rebase-ok')
+  const runner = workerRunner({ finalHead: C, rollbackHead: A, behind: '2', ahead: '1', ancestor: true, patchShas: C })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(runner.calls.some(call => call.join(' ') === `git rebase ${B}`), 'ahead commits must be replayed via git rebase <target>')
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'completed')
+  assert.match(state.message, /本地补丁保留在顶/)
+  const audit = await readAudit(root)
+  assert.deepEqual(audit[0].patchShas, [C], 'the audit line records the surviving local patch SHAs')
+})
+
+test('UPGRADE-002 ②b: a rebase conflict aborts, rolls back honestly and keeps the stash traceable', async () => {
+  const root = await tempDir('u2-rebase-fail')
+  const runner = workerRunner({ finalHead: A, rollbackHead: A, behind: '2', ahead: '1', ancestor: true, rebaseFails: true, dirtyBefore: ' M config/settings.json\n', stashList: 'stash@{0}	On main: auto-upgrade tx-test-001 (1 entries)' })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(runner.calls.some(call => call.join(' ') === 'git rebase --abort'), 'the failed rebase must be aborted to restore the worktree')
+  assert.ok(!runner.calls.some(call => call[0] === 'git' && call[1] === 'checkout'), 'after an aborted rebase a checkout would only fake a detached HEAD')
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'failed')
+  assert.match(state.message, /rebase 失败/)
+  assert.match(state.message, /git stash pop stash@\{0\}/, 'the failed run must hand the human the exact restore command for the stashed edits')
+  const audit = await readAudit(root)
+  assert.equal(audit[0].action, 'upgrade-failed')
+  assert.equal(audit[0].rolledBack, true)
+  assert.equal(audit[0].stashRef, 'stash@{0}')
+  assert.equal(audit[0].transactionId, 'tx-test-001')
+  process.exitCode = 0
+})
+
+test('UPGRADE-002 ②c: a pure-behind checkout never rebases (ff runbook regression)', async () => {
+  const root = await tempDir('u2-ff-only')
+  const runner = workerRunner({ finalHead: B, behind: '2', ahead: '0' })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(!runner.calls.some(call => call[0] === 'git' && call[1] === 'rebase'), 'no ahead commits means the runbook ff path runs untouched')
+  const audit = await readAudit(root)
+  assert.equal(audit[0].action, 'upgrade-completed')
+  assert.deepEqual(audit[0].patchShas, [])
+})
+
+test('UPGRADE-002 ③: a local patch on top passes the ancestor read-back gate (no false failure)', async () => {
+  const root = await tempDir('u2-ancestor-gate')
+  const runner = workerRunner({ finalHead: C, ancestor: true, ahead: '1', patchShas: C })
+  await performSparkdashUpgrade(await workerConfig(root), { runCommand: runner })
+  assert.ok(runner.calls.some(call => call.join(' ') === `git merge-base --is-ancestor ${B} ${C}`), 'the gate is descent, not strict equality: patch-on-top must pass')
+  const state = JSON.parse(await readFile(path.join(root, 'sparkdash-update-state.json'), 'utf8'))
+  assert.equal(state.state, 'completed', 'the 0.4.26-era strict-equality gate would have falsely failed this exact shape')
+  const audit = await readAudit(root)
+  assert.deepEqual(audit[0].patchShas, [C])
 })

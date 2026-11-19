@@ -64,8 +64,13 @@ export function apply(ctx, config = {}) {
     resolveSession: createSessionResolver({ manager }),
     deliver: createDeliverer({ manager, logger: ctx.logger }),
     logger: ctx.logger ?? console,
+    // ENGINE-QUEUE-001 ⑦b: 出腿并发上限（默认 8）；burst 复现要调走 config，不动码。
+    maxInFlight: Number(config.inboxPushMaxInFlight) || undefined,
   })
   communications.attachPusher(inboxPusher)
+  // ENGINE-QUEUE-001: the /engines reading reports my own plane's queue next to the engine
+  // gauges, so the pusher is reachable from the route without widening its signature.
+  manager.inboxPusher = inboxPusher
 
   // The controller (protected default instance) is a first-class participant of its own audited
   // circle. Its bots get the same four tools through the identical client-side validation, but
@@ -238,6 +243,12 @@ export async function handleApiRequest(req, res, manager, communications, runtim
     }
     if (method === 'GET' && route === '/teams') {
       return json(res, 200, { teams: await manager.listInstances() })
+    }
+    if (method === 'GET' && route === '/engines') {
+      // ENGINE-QUEUE-001: 引擎队列深度判据读数（纯只读探针，冻结告警权威源=jamwatch v3，此处
+      // 只报数带 frozenSince 标注）。self 块是**我域**排队，与引擎 waiting 分开报、不合成一枚数。
+      const report = await manager.observeEngines({ force: url.searchParams.get('refresh') === '1' })
+      return json(res, 200, { ...report, self: { inboxQueueDepth: manager.inboxPusher?.queueDepth?.() ?? null, inboxInFlight: manager.inboxPusher?.inFlight?.size ?? null } })
     }
     if (method === 'GET' && route === '/models') {
       return json(res, 200, { models: await manager.listModels() })

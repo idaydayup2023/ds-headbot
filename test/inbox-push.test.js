@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
 import { AuditedCommunications } from '../lib/communications.js'
-import { InboxPusher, buildPushText, createDeliverer, createSessionResolver, promptUrlFromLaunchUrl, signCookie, PUSH_TEXT_LIMIT } from '../lib/inbox-push.js'
+import { DEFAULT_MAX_IN_FLIGHT, InboxPusher, buildPushText, createDeliverer, createSessionResolver, promptUrlFromLaunchUrl, signCookie, PUSH_TEXT_LIMIT } from '../lib/inbox-push.js'
 import { add, fixture, online, quiet } from './helpers.js'
 
 function wirePusher(broker, manager, deliver) {
@@ -322,4 +322,66 @@ test('a refused request keeps its refusal even after the recipient comes online'
   assert.deepEqual((await broker.inbox(b)).messages, [])
   const audit = await broker.exportAudit()
   assert.deepEqual(audit.events.map(event => event.type), ['message.offline-rejected'])
+})
+
+// ENGINE-QUEUE-001 ⑦b 锁⑥：in-flight 上限 + FIFO。burst（案⑥ 实测 100% 集中单队）曾每枚消息
+// 起一枚 push、零上限直灌引擎——这里锁死"超上限排队、一件不丢、次序不乱、审计行照落"。
+test('ENGINE-QUEUE-001 ⑦b: bursts queue FIFO under the in-flight cap and drain still settles every audit line', async t => {
+  const tick = () => new Promise(resolve => setImmediate(resolve))
+  const events = []
+  const started = []
+  const gates = []
+  let active = 0
+  let peak = 0
+  const pusher = new InboxPusher({
+    appendEvent: async (type, data) => { events.push({ type, ...data }) },
+    resolveSession: async to => ({ sessionId: 'session-alpha', id: to.id, port: 1, home: '/tmp' }),
+    deliver: async (target, text, message) => {
+      started.push(message.text)
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise(resolve => gates.push(resolve))
+      active -= 1
+    },
+    logger: quiet,
+    maxInFlight: 2,
+  })
+  // 防御清理：断言中途红也不许把未放行 gates 吊成永久 pending（教训同款：泄漏的腿会吊死测试进程）。
+  t.after(() => { for (const release of gates.splice(0)) release() })
+
+  const messages = Array.from({ length: 5 }, (_, index) => ({ to: { id: 'alpha' }, seq: index + 1, requestId: `r${index}`, text: `m${index}` }))
+  const settled = messages.map(message => pusher.notify(message))
+  let lastDone = false
+  settled[4].then(() => { lastDone = true })
+
+  await tick()
+  assert.deepEqual(started, ['m0', 'm1'], '上限=2 时第 3 枚不得起跑（并发是闸不是摆设）')
+  assert.equal(pusher.inFlight.size, 2)
+  assert.equal(pusher.queueDepth(), 3, '其余 3 枚 FIFO 等位')
+  assert.equal(lastDone, false, '未起跑的 push 不得提前 resolve')
+
+  gates[0]()
+  await tick()
+  assert.deepEqual(started, ['m0', 'm1', 'm2'], '空出的位必须交给排队首（FIFO 交接）')
+  gates[1]()
+  await tick()
+  assert.deepEqual(started.slice(0, 4), ['m0', 'm1', 'm2', 'm3'])
+  assert.equal(lastDone, false, 'm4 还该在排队')
+  gates[2]()
+  await tick()
+  gates[3]()
+  await tick()
+  gates[4]()
+  await pusher.drain()
+
+  assert.deepEqual(started, ['m0', 'm1', 'm2', 'm3', 'm4'], '不丢、不乱：FIFO 到终')
+  assert.equal(peak, 2, '并发峰值从未越过上限')
+  assert.equal(lastDone, true, 'notify 的 promise 随本件推送完毕而 settle')
+  assert.deepEqual(events.map(event => event.type), Array(5).fill('message.pushed'), '排队过的件审计行一枚不落')
+  assert.deepEqual(events.map(event => event.messageSeq), [1, 2, 3, 4, 5])
+
+  // 上限兜底形制：缺省=8；垃圾值不得落成 0（0=永久排队=静默丢件的另一面）。
+  assert.equal(DEFAULT_MAX_IN_FLIGHT, 8)
+  const fallback = new InboxPusher({ appendEvent: async () => {}, resolveSession: async () => null, deliver: async () => {}, logger: quiet, maxInFlight: 0 })
+  assert.equal(fallback.maxInFlight, DEFAULT_MAX_IN_FLIGHT)
 })

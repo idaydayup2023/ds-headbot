@@ -325,3 +325,115 @@ test('default anchors follow the 2026-11-14 migration home (~/ai/litellm)', () =
     else process.env.LITELLM_VENV_DIR = previousEnv
   }
 })
+
+// ── HEALTH-LATENCY-001 ───────────────────────────────────────────────────────────────
+// The /litellm card used to pay for three cold venv-python interpreters and two GitHub round
+// trips on every open (~29 s warm here, >60 s cold), and a single stuck probe could hold it
+// open for the full 120 s gate budget. These cases lock the budget behaviour in.
+
+async function twoCheckManifest(root, commandFactory) {
+  const dir = await tempDir('gate')
+  const manifestFile = path.join(dir, 'LITELLM-BALANCE-001.manifest.json')
+  const payload = 'router_settings patch payload'
+  await writeFile(path.join(dir, 'least_busy.py'), payload)
+  await writeFile(manifestFile, JSON.stringify({ cwd: dir, sitePackages: dir, files: [{ path: 'least_busy.py', patchedMd5: md5(payload) }], checks: [
+    { name: 'gate1', command: commandFactory(1) },
+    { name: 'gate2', command: commandFactory(2) },
+  ] }))
+  return manifestFile
+}
+
+test('HEALTH-LATENCY-001 ①: version + gate probes are cached and coalesced, GitHub failure is negatively cached', async () => {
+  const root = await tempDir('latency-cache')
+  let versionCalls = 0
+  let gateCalls = 0
+  let fetchCalls = 0
+  const runImpl = async (command, args) => {
+    if (String(command).endsWith('litellm')) { versionCalls += 1; return { stdout: 'LiteLLM: 1.106.2', stderr: '' } }
+    gateCalls += 1
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  const fetchImpl = async () => { fetchCalls += 1; return { ok: false, status: 403 } }
+  const manifestFile = await twoCheckManifest(root, () => ['/bin/true'])
+  const updater = makeUpdater({ root, fetchImpl, runImpl, patchManifest: manifestFile })
+
+  const first = await updater.check()
+  assert.equal(versionCalls, 1, 'the version probe runs once')
+  assert.equal(gateCalls, 2, 'both gate checks run once')
+  assert.equal(fetchCalls, 1, 'the rate-limited release check runs once')
+  assert.equal(first.gate.passed, true)
+  assert.match(first.checkError, /限流/)
+
+  const second = await updater.check()
+  assert.equal(versionCalls, 1, '锁定案①: a repeat open must not re-spawn litellm --version')
+  assert.equal(gateCalls, 2, '锁定案①: a repeat open must not re-spawn the gate interpreters')
+  assert.equal(fetchCalls, 1, '锁定案①: a rate-limited upstream is cached briefly, not re-burned per open')
+  assert.equal(second.timings.versionCached, true)
+  assert.equal(second.timings.gateCached, true)
+  assert.equal(second.gate.passed, true)
+
+  // 锁定案①b: force (?refresh=1) still reaches everything.
+  await updater.check({ force: true })
+  assert.equal(versionCalls, 2, 'force must bypass the version cache')
+  assert.equal(gateCalls, 4, 'force must bypass the gate cache')
+  assert.equal(fetchCalls, 2, 'force must bypass the negative cache')
+})
+
+test('HEALTH-LATENCY-001 ②: the two gate checks run concurrently, not back to back', async () => {
+  const root = await tempDir('latency-parallel')
+  const slow = () => new Promise(resolve => setTimeout(() => resolve({ code: 0, stdout: '', stderr: '' }), 200))
+  const runImpl = async (command) => {
+    if (String(command).endsWith('litellm')) return { stdout: 'LiteLLM: 1.106.2', stderr: '' }
+    return slow()
+  }
+  const manifestFile = await twoCheckManifest(root, () => ['/bin/sleep'])
+  const updater = makeUpdater({ root, fetchImpl: githubRelease(), runImpl, patchManifest: manifestFile })
+  const status = await updater.check()
+  assert.equal(status.gate.passed, true)
+  assert.ok(status.timings.gateMs < 350, `两个 200ms 探针应并行（gateMs=${status.timings.gateMs}，串行将 ≥400ms）`)
+  assert.deepEqual(status.gate.details.filter(detail => detail.check).map(detail => detail.check), ['gate1', 'gate2'], '并发不改报告次序')
+})
+
+test('HEALTH-LATENCY-001 ③: a gate probe that traps SIGTERM is killed, the card never hangs', async () => {
+  const root = await tempDir('latency-hang')
+  // The real runFile is used here on purpose — this is the 防真挂回归门: a child that ignores
+  // SIGTERM must still be terminated (SIGKILL escalation) instead of holding the request open.
+  const manifestFile = await twoCheckManifest(root, () => ['/bin/sh', '-c', 'trap "" TERM; sleep 30'])
+  const startedAt = Date.now()
+  const gate = await runPatchGate(manifestFile, undefined, { timeoutMs: 400, killGraceMs: 200 })
+  const elapsed = Date.now() - startedAt
+  assert.equal(gate.passed, false, 'a stuck probe blocks the upgrade (fail closed)')
+  assert.ok(gate.reasons.some(reason => /补丁探针失败/.test(reason)), gate.reasons.join('；'))
+  assert.ok(elapsed < 8_000, `卡面不得被吊死的探针挂住（实测 ${elapsed}ms，SIGKILL 升级未生效将接近 30s）`)
+  assert.equal(gate.details.filter(d => d.ok === false).length, 2)
+})
+
+test('HEALTH-LATENCY-001 ④: the card budget must not leak into the pre-install gate', async () => {
+  const root = await tempDir('latency-install-gate')
+  const workerConfig = name => ({
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==<target>'],
+    freezeCmd: ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'],
+    launchdLabel: 'com.test.litellm', uid: 501,
+    gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
+    targetVersion: '1.107.0-stable', currentVersion: '1.106.2',
+    stateFile: path.join(root, `${name}-state.json`), auditFile: path.join(root, `${name}-audit.jsonl`),
+    logFile: path.join(root, `${name}.log`), backupDir: path.join(root, `${name}-backup`),
+  })
+  const runCommand = async (command, args) => {
+    if (args[0] === '--version') return { stdout: 'LiteLLM: 1.107.0-stable', stderr: '' }
+    return { stdout: 'Successfully installed litellm', stderr: '' }
+  }
+  const budgets = []
+  const patchGate = async (manifestFile, runImpl, options = {}) => { budgets.push(options); return { passed: true, reasons: [], details: [] } }
+  const deps = { runCommand, fetchImpl: async () => ({ status: 200 }), patchGate }
+
+  await performLitellmUpgrade(workerConfig('default'), deps)
+  assert.equal(budgets.length, 1, '预装闸门跑一次')
+  assert.ok(Number(budgets[0].timeoutMs) >= 120_000, `预装闸门不得被卡面 30s 预算收紧（实测 ${budgets[0].timeoutMs}ms）`)
+  assert.ok(Number(budgets[0].killGraceMs) > 0, '预装闸门也要 SIGTERM→SIGKILL 升级，否则真挂永等')
+
+  // 覆盖腿：运维可显式收紧，不必改码。
+  await performLitellmUpgrade({ ...workerConfig('tight'), installGateTimeoutMs: 5_000 }, deps)
+  assert.equal(Number(budgets[1].timeoutMs), 5_000, 'config 覆盖腿必须生效')
+})

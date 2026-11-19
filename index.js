@@ -66,6 +66,8 @@ export function apply(ctx, config = {}) {
     logger: ctx.logger ?? console,
     // ENGINE-QUEUE-001 ⑦b: 出腿并发上限（默认 8）；burst 复现要调走 config，不动码。
     maxInFlight: Number(config.inboxPushMaxInFlight) || undefined,
+    // BURST-PACING-001 ⑥: 相邻起跑间隔下限（默认 150ms）；0=显式关节奏，垃圾值回落缺省。
+    paceMs: config.inboxPushPaceMs === undefined ? undefined : Number(config.inboxPushPaceMs),
   })
   communications.attachPusher(inboxPusher)
   // ENGINE-QUEUE-001: the /engines reading reports my own plane's queue next to the engine

@@ -345,6 +345,8 @@ test('ENGINE-QUEUE-001 ⑦b: bursts queue FIFO under the in-flight cap and drain
     },
     logger: quiet,
     maxInFlight: 2,
+    // BURST-PACING-001 ⑥ 后仍锁"同刻起跑交接"形状：上限/FIFO 语义与节奏正交，这里显式关节奏。
+    paceMs: 0,
   })
   // 防御清理：断言中途红也不许把未放行 gates 吊成永久 pending（教训同款：泄漏的腿会吊死测试进程）。
   t.after(() => { for (const release of gates.splice(0)) release() })

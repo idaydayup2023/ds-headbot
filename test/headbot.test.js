@@ -56,7 +56,9 @@ test('HTTP admission separates browser management from team access and plugin to
     webServer: { host: '127.0.0.1', port: server.address().port, register(route) { routes.push(route); return () => routes.splice(routes.indexOf(route), 1) } },
     connection: { requestRejection(req) { return req.headers['x-controller-session'] === 'test' ? undefined : 401 } },
     logger: quiet, effect(callback) { dispose = callback() },
-  }, { dataDir, dshHome: path.join(root, 'http-home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port(), communicationLimits: { textBytes: 128, attachmentBytes: 1024, transferBytes: 2048 } })
+  }, { dataDir, dshHome: path.join(root, 'http-home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port(), communicationLimits: { textBytes: 128, attachmentBytes: 1024, transferBytes: 2048 },
+    // BURST-PACING-001 ⑥: 本案断言"发送即留 push 审计行"的次序形制，与压入节奏正交——config 显式关节奏。
+    inboxPushPaceMs: 0 })
   t.after(() => dispose())
   const base = `http://127.0.0.1:${server.address().port}${apiPath}`
   const admin = { 'x-controller-session': 'test', 'Content-Type': 'application/json' }

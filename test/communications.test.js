@@ -25,7 +25,9 @@ test('delivered messages, binary attachments, safe retries and replay survive co
   assert.deepEqual((await reloaded.inbox(b, inbox.nextCursor)).messages, [])
   const file = sent.message.attachments[0]
   assert.deepEqual((await reloaded.attachment(b, sent.message.messageId, file.id)).bytes, bytes)
-  await assert.rejects(reloaded.attachment(c, sent.message.messageId, file.id), { statusCode: 404 })
+  // ATTACH-404-001 锁定案①: a third party on a durable attachment is a permission answer (403),
+  // never a "not found" answer — the object is present and indexed.
+  await assert.rejects(reloaded.attachment(c, sent.message.messageId, file.id), { statusCode: 403, message: /not the recipient/ })
   const audit = await reloaded.exportAudit()
   assert.deepEqual(audit.events.map(event => event.type), ['message.sent', 'messages.received', 'attachment.received'])
   assert.equal(audit.events[0].attachments[0].sha256, file.sha256)
@@ -204,4 +206,29 @@ test('sealed segments are immutable while new appends land in later segments', a
   const audit = await new AuditedCommunications(manager.root, manager, { journalRotateBytes: 2048 }).exportAudit()
   assert.equal(audit.integrity, 'verified')
   assert.ok(audit.events.length >= 22)
+})
+
+test('ATTACH-404-001: an unknown message is 404 while another instance message is 403, never both 404', async t => {
+  const { manager } = await fixture(t)
+  await add(manager, 'alpha'); await add(manager, 'beta')
+  online(manager, 'beta')
+  const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
+  const controller = manager.controllerIdentity()
+  const broker = new AuditedCommunications(manager.root, manager)
+  const bytes = Buffer.from('mv 账副本 — 发往 controller 的真件')
+  // The live shape: a team posts an attachment to the controller (系统保障组/default).
+  const sent = await broker.send(a, { to: 'default', text: 'mv 账副本', requestId: randomUUID(), attachments: [{ name: 'mvlog.md', contentBase64: bytes.toString('base64') }] })
+  const attachmentId = sent.message.attachments[0].id
+  assert.equal(sent.message.to.instanceId, 'controller')
+  // The recipient gets the bytes, with the integrity check intact.
+  assert.deepEqual((await broker.attachment(controller, sent.message.messageId, attachmentId)).bytes, bytes)
+  // 锁定案②: a genuinely unknown message id stays a 404 — the two answers must not collapse into one.
+  await assert.rejects(broker.attachment(b, randomUUID(), attachmentId), { statusCode: 404, message: /attachment not found/ })
+  // 锁定案① (same shape as the live incident): the object is on disk and indexed, so a team that is
+  // not the recipient is told it is not the recipient — not that the attachment is missing.
+  await assert.rejects(broker.attachment(b, sent.message.messageId, attachmentId), { statusCode: 403, message: /not the recipient/ })
+  // The reviewer path still reaches it, and neither rejection left an audit claim behind.
+  assert.deepEqual((await broker.attachment({ id: 'controller-browser' }, sent.message.messageId, attachmentId, true)).bytes, bytes)
+  const audit = await broker.exportAudit()
+  assert.deepEqual(audit.events.map(event => event.type), ['message.sent', 'attachment.received', 'attachment.reviewed'])
 })

@@ -407,3 +407,33 @@ test('HEALTH-LATENCY-001 ③: a gate probe that traps SIGTERM is killed, the car
   assert.ok(elapsed < 8_000, `卡面不得被吊死的探针挂住（实测 ${elapsed}ms，SIGKILL 升级未生效将接近 30s）`)
   assert.equal(gate.details.filter(d => d.ok === false).length, 2)
 })
+
+test('HEALTH-LATENCY-001 ④: the card budget must not leak into the pre-install gate', async () => {
+  const root = await tempDir('latency-install-gate')
+  const workerConfig = name => ({
+    litellmBin: '/venv/bin/litellm',
+    installCmd: ['/fake-bin/uv', 'pip', 'install', '--python', '/venv/bin/python', 'litellm==<target>'],
+    freezeCmd: ['/fake-bin/uv', 'pip', 'freeze', '--python', '/venv/bin/python'],
+    launchdLabel: 'com.test.litellm', uid: 501,
+    gatewayUrl: 'http://gateway.test', manifestFile: path.join(root, 'manifest.json'),
+    targetVersion: '1.107.0-stable', currentVersion: '1.106.2',
+    stateFile: path.join(root, `${name}-state.json`), auditFile: path.join(root, `${name}-audit.jsonl`),
+    logFile: path.join(root, `${name}.log`), backupDir: path.join(root, `${name}-backup`),
+  })
+  const runCommand = async (command, args) => {
+    if (args[0] === '--version') return { stdout: 'LiteLLM: 1.107.0-stable', stderr: '' }
+    return { stdout: 'Successfully installed litellm', stderr: '' }
+  }
+  const budgets = []
+  const patchGate = async (manifestFile, runImpl, options = {}) => { budgets.push(options); return { passed: true, reasons: [], details: [] } }
+  const deps = { runCommand, fetchImpl: async () => ({ status: 200 }), patchGate }
+
+  await performLitellmUpgrade(workerConfig('default'), deps)
+  assert.equal(budgets.length, 1, '预装闸门跑一次')
+  assert.ok(Number(budgets[0].timeoutMs) >= 120_000, `预装闸门不得被卡面 30s 预算收紧（实测 ${budgets[0].timeoutMs}ms）`)
+  assert.ok(Number(budgets[0].killGraceMs) > 0, '预装闸门也要 SIGTERM→SIGKILL 升级，否则真挂永等')
+
+  // 覆盖腿：运维可显式收紧，不必改码。
+  await performLitellmUpgrade({ ...workerConfig('tight'), installGateTimeoutMs: 5_000 }, deps)
+  assert.equal(Number(budgets[1].timeoutMs), 5_000, 'config 覆盖腿必须生效')
+})

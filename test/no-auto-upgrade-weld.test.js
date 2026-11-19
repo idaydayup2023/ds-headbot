@@ -82,7 +82,9 @@ test('NO-AUTO-UPGRADE-001 weld ③: importing the updater as a module never boot
   assert.match(source, /if \(process\.argv\[1\] && path\.resolve\(process\.argv\[1\]\) === fileURLToPath\(import\.meta\.url\)\)/,
     '源形制双保险：worker 体只认自指 main')
   const output = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['-e', `import(${JSON.stringify(pathToFileURL(modulePath).href)}).then(() => process.exit(0))`], { stdio: ['ignore', 'pipe', 'pipe'] })
+    // 自然退出，不 .then(process.exit(0))：强制归零会把"守卫被旁路、升级体自炸 exitCode 1"
+    // 的失败盖成绿（刀③b 实测坐实）。体若吊死，下方 10s 计时器 SIGKILL 判红。
+    const child = spawn(process.execPath, ['-e', `import(${JSON.stringify(pathToFileURL(modulePath).href)})`], { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr += chunk })

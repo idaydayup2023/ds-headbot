@@ -37,7 +37,7 @@ flowchart LR
 | --- | --- |
 | `GET /teams` | 返回 `protocol`、`self`、容量限制和其他参与者（含保障组 `default`）的 `id/name/status`，不含调用者自身 |
 | `POST /messages` | 审计并发送一条消息，返回 `message` 与 `duplicate` |
-| `GET /inbox?after=0&limit=20` | 按审计序号升序读取本实例收件箱；返回 `messages` 与 `nextCursor` |
+| `GET /inbox[?after=N]&limit=20` | 省略 `after`=服务端读位模式（读位由账本盖章推出、盖章即推进）；显式 `after`=只读回放（不动读位）。返回 `messages`、`nextCursor` 与 `readMode` |
 | `GET /messages/<messageId>/attachments/<attachmentId>` | 仅收件实例可下载；返回附件元数据与 `contentBase64` |
 | `POST /status` | 上报本进程的 Feishu 长连接状态和 Agent 会话状态；不传递消息内容 |
 
@@ -63,7 +63,7 @@ flowchart LR
 
 成功消息包含 `protocol`、`seq`、`id`（审计事件 UUID）、`timestamp`、`type: message.sent`、`messageId`、`requestId`、`from/to` 身份快照、`subject`、完整 `text`、附件元数据、`previousHash/hash`。附件元数据为 `id/name/mediaType/size/sha256`。身份快照为 `id/name/instanceId`，因此更名或删除后仍可追溯。
 
-默认限制：文字 65,536 字节、主题 512 字节、最多 8 个附件、单个 10 MiB、合计 20 MiB。配置 `communicationLimits` 可降低 `textBytes/attachmentBytes/transferBytes/attachments`。`limit` 为 1–100，`after` 为上次的 `nextCursor`，0 可重放全部历史。消息没有破坏性“消费”操作；调用者保留游标，重复读取会再次产生读取审计。接收实例停止时消息继续排队；收件工具不会自动唤醒模型。
+默认限制：文字 65,536 字节、主题 512 字节、最多 8 个附件、单个 10 MiB、合计 20 MiB。配置 `communicationLimits` 可降低 `textBytes/attachmentBytes/transferBytes/attachments`。`limit` 为 1–100。**游标只有服务端一份真相**：省略 `after` 走服务端读位（由 `advance:true` 的 `messages.received` 盖章推出，重启可从账本重建），返回新批并盖章、盖章即推进；显式 `after` 为**只读回放**（站长审计/工具重放），照常返回并盖章留痕，但不动读位。消息没有破坏性“消费”操作；接收实例停止时消息继续排队；收件工具不会自动唤醒模型。
 
 常见状态：`400` 输入错误，`401` 无效或已撤销凭据，`404` 目标/附件不存在或不属于收件实例，`409` 重试 ID 冲突，`413` 容量超限，`500` 底层存储故障，`503` 审计或附件完整性错误。调用者不得将失败响应视作成功送达。网络超时后用原 `requestId` 重试。
 

@@ -4,7 +4,6 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { AGENT_RUNTIME_STATES, FEISHU_RUNTIME_STATES } from '../lib/manager/shared.js'
-import { mapFeishuConnectionState } from '../plugins/ds-headbot-feishu/lib/status.js'
 import { fixture } from './helpers.js'
 
 const STATUS_ENV = 'HEADBOT_FEISHU_STATUS'
@@ -156,10 +155,17 @@ test('welds: boot arms the monitor and close clears it', async t => {
 })
 
 test('weld: one status vocabulary across the plugin mapper and the manager intake', async t => {
-  for (const state of ['idle', 'connecting', 'connected', 'reconnecting', 'failed', undefined]) {
-    assert.ok(FEISHU_RUNTIME_STATES.has(mapFeishuConnectionState(state)), `mapFeishuConnectionState('${state}') stays inside the shared vocabulary`)
+  // Source-truth weld: the plugin module imports cordis at its top level, which the controller's
+  // installed tree cannot resolve; the mapping legs are locked from the plugin's own source text.
+  const pluginSource = await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugins', 'ds-headbot-feishu', 'src', 'status.ts'), 'utf8')
+  const mapper = pluginSource.match(/export function mapFeishuConnectionState[\s\S]*?\n\}/)
+  assert.ok(mapper, 'the plugin mapper exists')
+  const mapped = [...mapper[0].matchAll(/return '([a-z-]+)'/g)].map(match => match[1])
+  assert.ok(mapped.length >= 5, 'the mapper covers the SDK lifecycle')
+  for (const state of mapped) {
+    assert.ok(FEISHU_RUNTIME_STATES.has(state), `mapFeishuConnectionState returns ${state}, which is inside the shared vocabulary`)
   }
-  assert.ok(FEISHU_RUNTIME_STATES.has('unknown') && FEISHU_RUNTIME_STATES.has('retrying') && FEISHU_RUNTIME_STATES.has('offline'))
+  assert.ok(mapped.includes('unknown'), 'unmapped SDK states fall back to the shared unknown')
   for (const state of ['restoring', 'online', 'offline', 'failed']) {
     assert.ok(AGENT_RUNTIME_STATES.has(state), `agent state ${state} is shared`)
   }

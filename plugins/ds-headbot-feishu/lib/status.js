@@ -9,6 +9,18 @@ export function mapFeishuConnectionState(state) {
         default: return 'unknown';
     }
 }
+export const HEADBOT_FEISHU_STATUS_ENV = 'HEADBOT_FEISHU_STATUS';
+export const HEADBOT_FEISHU_STATUS_AT_ENV = 'HEADBOT_FEISHU_STATUS_AT';
+export const HEADBOT_FEISHU_AGENT_STATUS_ENV = 'HEADBOT_FEISHU_AGENT_STATUS';
+// FEISHU-STATUS-001: a managed team instance pushes these same values to the controller over
+// /comms/v1/status; the default instance hosts the plugin in-process, so the controller reflects
+// them from the environment instead. The heartbeat stamp lets the controller tell a live plugin
+// from one that unloaded while its last-known status still sat in the environment.
+export function writeConnectionStatusEnv(connection, agent) {
+    process.env[HEADBOT_FEISHU_STATUS_ENV] = connection;
+    process.env[HEADBOT_FEISHU_AGENT_STATUS_ENV] = agent;
+    process.env[HEADBOT_FEISHU_STATUS_AT_ENV] = String(Date.now());
+}
 export class HeadbotFeishuStatus extends Service {
     agentStatus = 'restoring';
     constructor(ctx) {

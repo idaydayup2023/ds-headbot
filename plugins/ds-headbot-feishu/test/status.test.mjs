@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mapFeishuConnectionState } from '../lib/status.js'
+import { mapFeishuConnectionState, writeConnectionStatusEnv, HEADBOT_FEISHU_STATUS_ENV, HEADBOT_FEISHU_STATUS_AT_ENV, HEADBOT_FEISHU_AGENT_STATUS_ENV } from '../lib/status.js'
 import { inject as feishuServices } from '../lib/index.js'
 import { inject as communicationsServices, runtimeStatusPayload } from '../../../lib/team-plugin.js'
 
@@ -32,4 +32,20 @@ test('runtime status payload reports Feishu and selected-agent state without opt
   assert.deepEqual(runtimeStatusPayload('offline', undefined, agents), {
     feishuStatus: 'offline', agentStatus: 'offline',
   })
+})
+
+test('the published heartbeat carries both statuses plus a fresh stamp for the in-process controller', t => {
+  const previous = [HEADBOT_FEISHU_STATUS_ENV, HEADBOT_FEISHU_STATUS_AT_ENV, HEADBOT_FEISHU_AGENT_STATUS_ENV].map(key => process.env[key])
+  t.after(() => {
+    ;[HEADBOT_FEISHU_STATUS_ENV, HEADBOT_FEISHU_STATUS_AT_ENV, HEADBOT_FEISHU_AGENT_STATUS_ENV].forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key]
+      else process.env[key] = previous[index]
+    })
+  })
+  const before = Date.now()
+  writeConnectionStatusEnv('connected', 'online')
+  assert.equal(process.env[HEADBOT_FEISHU_STATUS_ENV], 'connected')
+  assert.equal(process.env[HEADBOT_FEISHU_AGENT_STATUS_ENV], 'online')
+  const at = Number(process.env[HEADBOT_FEISHU_STATUS_AT_ENV])
+  assert.ok(Number.isSafeInteger(at) && at >= before && at <= Date.now(), 'the heartbeat stamp is the current wall clock')
 })

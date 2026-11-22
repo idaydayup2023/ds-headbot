@@ -271,10 +271,12 @@ test('updateBot fails a zero-exit update whose package version never moved (DSBO
   assert.equal(manager.findTeam('pinned').botInstalled, true, 'start provisioned the install')
   registryLatest(manager, '0.3.8')
   await assert.rejects(manager.updateBot('pinned'), { message: /still at 0\.3\.6 after the update while the latest version is 0\.3\.8/ })
-  assert.equal(manager.runtime.get('pinned').phase, 'failed', 'the failed phase must be visible on the card')
+  // TEAM-UPGRADE-001: the failed upgrade no longer leaves the team down — the still-good old
+  // package goes back to serving while the message keeps the failure for the card.
+  assert.equal((await manager.getTeam('pinned')).status, 'running', 'the old package keeps serving after a failed update')
   assert.match(manager.runtime.get('pinned').message, /0\.3\.6/, 'the failed message must carry both versions')
   assert.equal(manager.findTeam('pinned').botInstalled, true, 'the install flag survives because the package was installed before the failed update')
-  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot/, 'the dsh leg still ran and exited 0')
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot --config\.minimumReleaseAge=0/, 'the dsh leg ran and exited 0')
 })
 
 test('updateBot completes and starts the team when the package version matches the registry latest', async t => {

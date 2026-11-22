@@ -276,7 +276,7 @@ test('updateBot fails a zero-exit update whose package version never moved (DSBO
   assert.equal((await manager.getTeam('pinned')).status, 'running', 'the old package keeps serving after a failed update')
   assert.match(manager.runtime.get('pinned').message, /0\.3\.6/, 'the failed message must carry both versions')
   assert.equal(manager.findTeam('pinned').botInstalled, true, 'the install flag survives because the package was installed before the failed update')
-  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot --config\.minimumReleaseAge=0/, 'the dsh leg ran and exited 0')
+  assert.match(await readFile(pluginLog, 'utf8'), /plugin --profile web update --latest ds-bot --config\.minimumReleaseAgeExclude=ds-bot@\*/, 'the dsh leg ran and exited 0')
 })
 
 test('updateBot completes and starts the team when the package version matches the registry latest', async t => {

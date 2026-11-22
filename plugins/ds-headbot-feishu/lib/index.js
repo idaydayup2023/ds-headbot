@@ -35,7 +35,7 @@ import { attachInbound } from "./inbound.js";
 import { registerFeishuTools } from "./tools.js";
 import { PendingQuestionState } from "./questions.js";
 import { ChatSessionStore, ModelOverrideStore } from "./persistence.js";
-import { HeadbotFeishuStatus, mapFeishuConnectionState } from "./status.js";
+import { HeadbotFeishuStatus, mapFeishuConnectionState, writeConnectionStatusEnv } from "./status.js";
 export const name = 'ds-headbot-feishu';
 export const inject = ['agents', 'sessionPersistence'];
 export const Config = z.object({
@@ -168,7 +168,7 @@ export function apply(ctx, config) {
         },
     });
     const updateConnectionStatus = () => {
-        process.env.HEADBOT_FEISHU_STATUS = mapFeishuConnectionState(service.getConnectionStatus()?.state);
+        writeConnectionStatusEnv(mapFeishuConnectionState(service.getConnectionStatus()?.state), headbotStatus.getAgentStatus());
     };
     updateConnectionStatus();
     const connectionMonitor = setInterval(updateConnectionStatus, 1000);
@@ -183,7 +183,7 @@ export function apply(ctx, config) {
         };
     });
     // 建立长连接（SDK 自动重连；初始失败只记录日志，不阻断插件加载）。
-    process.env.HEADBOT_FEISHU_STATUS = 'connecting';
+    writeConnectionStatusEnv('connecting', headbotStatus.getAgentStatus());
     void service.connect()
         .then(() => {
         updateConnectionStatus();
@@ -191,7 +191,7 @@ export function apply(ctx, config) {
         ctx.logger.info(`feishu: 长连接已就绪（机器人：${identity?.name ?? identity?.openId ?? 'unknown'}）`);
     })
         .catch((error) => {
-        process.env.HEADBOT_FEISHU_STATUS = 'retrying';
+        writeConnectionStatusEnv('retrying', headbotStatus.getAgentStatus());
         ctx.logger.error('feishu: 连接长连接失败，请检查 appId/appSecret 与网络（SDK 将自动重试）', error);
     });
     // 入站互动：飞书消息 → 机器人回复。

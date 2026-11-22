@@ -38,7 +38,7 @@ import { attachInbound, type InboundShared } from './inbound.ts'
 import { registerFeishuTools } from './tools.ts'
 import { PendingQuestionState } from './questions.ts'
 import { ChatSessionStore, ModelOverrideStore } from './persistence.ts'
-import { HeadbotFeishuStatus, mapFeishuConnectionState } from './status.ts'
+import { HeadbotFeishuStatus, mapFeishuConnectionState, writeConnectionStatusEnv } from './status.ts'
 
 export const name = 'ds-headbot-feishu'
 export const inject = ['agents', 'sessionPersistence']
@@ -283,7 +283,7 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   const updateConnectionStatus = (): void => {
-    process.env.HEADBOT_FEISHU_STATUS = mapFeishuConnectionState(service.getConnectionStatus()?.state)
+    writeConnectionStatusEnv(mapFeishuConnectionState(service.getConnectionStatus()?.state), headbotStatus.getAgentStatus())
   }
   updateConnectionStatus()
   const connectionMonitor = setInterval(updateConnectionStatus, 1000)
@@ -300,7 +300,7 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // 建立长连接（SDK 自动重连；初始失败只记录日志，不阻断插件加载）。
-  process.env.HEADBOT_FEISHU_STATUS = 'connecting'
+  writeConnectionStatusEnv('connecting', headbotStatus.getAgentStatus())
   void service.connect()
     .then(() => {
       updateConnectionStatus()
@@ -308,7 +308,7 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.info(`feishu: 长连接已就绪（机器人：${identity?.name ?? identity?.openId ?? 'unknown'}）`)
     })
     .catch((error: unknown) => {
-      process.env.HEADBOT_FEISHU_STATUS = 'retrying'
+      writeConnectionStatusEnv('retrying', headbotStatus.getAgentStatus())
       ctx.logger.error('feishu: 连接长连接失败，请检查 appId/appSecret 与网络（SDK 将自动重试）', error)
     })
 

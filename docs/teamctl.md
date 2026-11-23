@@ -19,6 +19,8 @@ teamctl restart <id> [...]
 teamctl stop-all --yes                # 检修模式：停全部业务团队（controller 永不停）
 teamctl stop-all --yes --keep subtrans    # 保留某队不停
 teamctl stop-all --yes --emergency    # 非 20:00–04:00 时段，总务裁决破例
+teamctl stop-all --yes --persist      # 持久停止：连 autoStart 一起关，controller 重启也不复活
+teamctl start-all --persist           # 恢复并精确还原 autoStart 原值
 teamctl start-all                     # 检修完，全部拉起
 teamctl logs <id> [n]                 # 看某队日志尾（默认 40 行）
 ```
@@ -34,6 +36,14 @@ teamctl status                 # 起后核对
 ```
 
 退出码 `0` 成功 / `1` 失败（stderr 给原因）。
+
+## 持久停止（`--persist`）：controller 重启也不复活
+
+`explicitStop` 只是 controller 的**内存态**。controller 一旦重启（**升级就会重启**），`startEnabledTeams()` 会对所有 `autoStart=true` 的队重新 `startTeam`，被停的队就自己复活抢回算力。
+
+`--persist` 因此把 `autoStart` 一并关掉（走官方 `PATCH /teams/<id>`，不改配置文件），并把原值记进 `persist.json`；`start-all --persist` 精确还原原值（原本就是 false 的队不会被强行打开）。**检修窗内若恰逢 headbot 升级，用 `--persist` 停，升级重启后仍保持停止。**
+
+状态文件：`~/Library/Application Support/DeepSeekHarness/bot/workspace/logs/teamctl/persist.json`（`TEAMCTL_TRACE_DIR` 可改）。
 
 ## 为什么数据不丢（机制，不是口头保证）
 
@@ -58,7 +68,7 @@ teamctl status                 # 起后核对
 | `DSH_INGRESS_PORT` | `3180` | ingress 端口 |
 | `DSH_PUBLIC_HOST` | `192.168.1.5` | 请求 Host 头（Origin 同源校验用） |
 | `DSH_HOST` | `127.0.0.1` | 实际连接地址 |
-| `TEAMCTL_TRACE_DIR` | `~/Library/Logs/DeepSeekHarness/teamctl` | 留痕目录（包内目录只读时改这里） |
+| `TEAMCTL_TRACE_DIR` | `$DSH_HOME/bot/workspace/logs/teamctl` | 留痕与 persist.json 目录 |
 
 ## 排障
 

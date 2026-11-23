@@ -53,10 +53,10 @@ HEADBOT_ROOT = Path(
 )
 TEAMS_DIR = HEADBOT_ROOT / "teams"
 TEAM_LOGS = HEADBOT_ROOT / "logs"
-# 留痕不写包内（node_modules 可能只读），默认落用户日志目录。
-TRACE_DIR = Path(
-    os.environ.get("TEAMCTL_TRACE_DIR") or HOME / "Library/Logs/DeepSeekHarness/teamctl"
-)
+# 留痕与持久停止状态：不写包内（node_modules 可能只读），也不写 ~/Library/Logs
+# （沙箱/权限可能拒绝），默认落 DSH_HOME 下的 bot workspace。
+DSH_HOME = Path(os.environ.get("DSH_HOME") or HOME / "Library/Application Support/DeepSeekHarness")
+TRACE_DIR = Path(os.environ.get("TEAMCTL_TRACE_DIR") or DSH_HOME / "bot" / "workspace" / "logs" / "teamctl")
 
 INNER_HOST = os.environ.get("DSH_HOST") or "127.0.0.1"
 INNER_PORT = int(os.environ.get("DSH_INGRESS_PORT") or 3180)
@@ -207,7 +207,7 @@ def cmd_status(_args):
     return 0
 
 
-def act(action, ids, keep):
+def act(action, ids, keep, persist=False):
     cookie = login()
     teams = list_teams(cookie)
     targets = []
@@ -218,15 +218,33 @@ def act(action, ids, keep):
             die(f"团队不存在：{team_id}")
         targets.append(team_id)
 
+    saved = load_persist() if persist else {}
     rc = 0
     for team_id in targets:
         before = data_guard(team_id)
+        note = ""
+        if persist and action == "stop":
+            current = find_team(list_teams(cookie), team_id)
+            saved[team_id] = bool((current or {}).get("autoStart"))
+            save_persist(saved)
+            set_auto_start(cookie, team_id, False)
+            note = "（autoStart→false，防重启复活）"
+        elif persist and action == "start":
+            note = "（autoStart 还原）"
+
         status, payload = api("POST", f"/teams/{team_id}/{action}", cookie, body={})
         if status not in (200, 202):
             print(f"{team_id}: 下发 {action} 失败（HTTP {status}）{payload}", file=sys.stderr)
             rc = 1
             log_trace(action, [team_id], 1, f"http={status}", before=before)
             continue
+
+        if persist and action == "start" and team_id in saved:
+            restore = saved.pop(team_id)
+            set_auto_start(cookie, team_id, restore)
+            save_persist(saved)
+            note = f"（autoStart 还原为 {str(restore).lower()}）"
+
         want = "running" if action == "start" else ("stopped" if action == "stop" else None)
         if want:
             team = wait_status(cookie, team_id, want)
@@ -238,8 +256,8 @@ def act(action, ids, keep):
         intact = "数据面一致" if before == after else "⚠ 数据面变化"
         if before != after:
             rc = 1
-        print(f"{team_id}: {action} → {state}（{intact}，{before or 0}→{after or 0}）")
-        log_trace(action, [team_id], 0 if before == after else 1, state, before=before, after=after)
+        print(f"{team_id}: {action} → {state}（{intact}，{before or 0}→{after or 0}）{note}")
+        log_trace(action, [team_id], 0 if before == after else 1, f"{state}{note}", before=before, after=after)
     return rc
 
 
@@ -249,8 +267,41 @@ def in_service_window(when=None):
     return when.hour >= 20 or when.hour < 4
 
 
+# ---------------------------------------------------------------------------
+# 持久停止（--persist）
+#
+# explicitStop 只是 controller 的**内存态**：controller 一旦重启（升级就会重启），
+# startEnabledTeams() 会对所有 autoStart=true 的队重新 startTeam，被停的队会自己
+# 复活抢算力。--persist 因此把 autoStart 一并关掉（走官方 PATCH /teams/<id>），
+# 并把原值记在 persist.json，start 时精确还原——重启多少次都保持停止。
+# ---------------------------------------------------------------------------
+PERSIST_FILE = TRACE_DIR / "persist.json"
+
+
+def load_persist():
+    try:
+        return json.loads(PERSIST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_persist(data):
+    """写持久停止状态；写不进去只警告，不阻断停机本身。"""
+    try:
+        TRACE_DIR.mkdir(parents=True, exist_ok=True)
+        PERSIST_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"⚠ 持久停止状态写不进 {PERSIST_FILE}（{exc}）；autoStart 已改，但重启后可能复活", file=sys.stderr)
+
+
+def set_auto_start(cookie, team_id, value):
+    status, payload = api("PATCH", f"/teams/{team_id}", cookie, body={"autoStart": value})
+    return status == 200
+
+
 def cmd_stop_all(args):
     keep = set(args.get("--keep") or [])
+    persist = bool(args.get("--persist"))
     if not args.get("--yes"):
         die("stop-all 会中断全部业务团队，确认请加 --yes")
     if not in_service_window() and not args.get("--emergency"):
@@ -261,8 +312,8 @@ def cmd_stop_all(args):
     if not ids:
         print("没有可停的业务团队")
         return 0
-    print(f"检修模式：停 {len(ids)} 队（{', '.join(ids)}）")
-    return act("stop", ids, keep)
+    print(f"检修模式：停 {len(ids)} 队（{', '.join(ids)}）{'，持久停止（autoStart→false）' if persist else ''}")
+    return act("stop", ids, keep, persist=persist)
 
 
 def cmd_logs(args):
@@ -290,11 +341,13 @@ def main(argv):
     if cmd == "status":
         return cmd_status(args)
     if cmd in ("stop", "start", "restart"):
-        if not args:
-            die(f"用法：teamctl {cmd} <id> [<id>...]")
-        return act(cmd, args, set())
+        persist = "--persist" in args
+        ids = [a for a in args if a != "--persist"]
+        if not ids:
+            die(f"用法：teamctl {cmd} <id> [<id>...] [--persist]")
+        return act(cmd, ids, set(), persist=persist)
     if cmd == "stop-all":
-        keep, yes, emergency = [], False, False
+        keep, yes, emergency, persist = [], False, False, False
         rest = []
         i = 0
         while i < len(args):
@@ -307,16 +360,20 @@ def main(argv):
             elif args[i] == "--emergency":
                 emergency = True
                 i += 1
+            elif args[i] == "--persist":
+                persist = True
+                i += 1
             else:
                 rest.append(args[i])
                 i += 1
         if rest:
             die(f"stop-all 不认识参数：{rest}")
-        return cmd_stop_all({"--keep": keep, "--yes": yes, "--emergency": emergency})
+        return cmd_stop_all({"--keep": keep, "--yes": yes, "--emergency": emergency, "--persist": persist})
     if cmd == "start-all":
+        persist = "--persist" in args
         cookie = login()
         ids = [t["id"] for t in list_teams(cookie) if t.get("id") != DEFAULT_TEAM]
-        return act("start", ids, set())
+        return act("start", ids, set(), persist=persist)
     if cmd == "logs":
         return cmd_logs(args)
 

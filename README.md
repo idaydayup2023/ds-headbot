@@ -113,6 +113,24 @@ Teams do not keep a frozen copy of the model configuration. On provisioning and 
 
 Every `[ds-headbot] …` line the manager and its updaters emit is passed through to the host logger and also printed to stdout/stderr, which the service manager captures (on macOS the LaunchAgent redirects both streams into the DeepSeekHarness log directory, `server.log`). The Cordis logger inside the DSH host has no on-disk exporter of its own — its built-in sink is an in-memory diagnostic ring — so printing is what makes lifecycle events visible on disk, including `adopted the still-serving <team> runtime (pid …)` after a controller restart and the best-effort failure clues from every module.
 
+### Maintenance window: stop and start whole teams (`teamctl`)
+
+`scripts/teamctl.py` gives the operator (the controller side) one command surface for maintenance: stop the other teams' runtimes to free model capacity during a model or code service window, then bring them back exactly as they were. It ships in the package, so any Headbot instance can use it after installing.
+
+```bash
+teamctl status                      # read-only: status / pid / port / autoStart per team
+teamctl stop-all --yes              # maintenance mode: stop every business team
+teamctl start-all                   # restore them all afterwards
+teamctl stop <id> [...] / start <id> [...] / restart <id> [...]
+teamctl logs <id> [n]
+```
+
+It stops a team through the controller's own management API (`POST /api/ds-headbot/v1/teams/<id>/stop`), which runs `manager.stopTeam()`: SIGTERM the process tree, wait for close, clear the runtime pid, mark `stopped`. Nothing under `teams.json` or `teams/<id>/{home,workspace}` is touched and no file is deleted, so each team **resumes from where it was interrupted** and its user data is unchanged. An explicit stop also sets `explicitStop`, so the autoStart leg will not bring the team back — that is what actually frees the capacity, and why killing the process directly is wrong (it would be respawned).
+
+Every stop/start compares a **user-data fingerprint** before and after (`workspace/`, `home/bot/sessions/`, `home/bot/memory/`, `home/bot/MEMORY.md`, locks excluded) and exits non-zero with `⚠ 数据面变化` if anything differs. Each call appends one JSON line to `~/Library/Logs/DeepSeekHarness/teamctl/teamctl.jsonl` for later reconciliation.
+
+Authorization: the operator may schedule a maintenance window and then execute directly — no per-window notice, permission request, or receipt collection from the other teams. Windows are normally 20:00–04:00; off-window execution is a deliberate operator decision and requires `--emergency` on `stop-all`. Full usage, environment overrides, and troubleshooting: [Team maintenance tool](docs/teamctl.md).
+
 ## Team communication and audit
 
 Every managed instance loads the `ds-headbot-communications` DSH tool plugin through a generated patch. The patch references the controller's installed package, so no extra DSH installation or nested Headbot controller is needed. Restart instances after upgrading Headbot to load the new plugin code. DSH launches from `<DSH_HOME>/headbot/teams/<id>/workspace`, while DS Bot uses `<DSH_HOME>/headbot/teams/<id>/home/bot/workspace`. File-send paths resolve relative to the DS Bot workspace first, then the earlier Headbot workspace; absolute paths are accepted only inside one of those two directories. Downloads go to the DS Bot workspace's `inbox`. DSH settings and credentials remain in the sibling `home` directory.

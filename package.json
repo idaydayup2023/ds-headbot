@@ -35,6 +35,7 @@
     "icon.svg",
     "docs/*.md",
     "scripts/*.mjs",
+    "scripts/*.py",
     "plugins/ds-headbot-feishu",
     "!plugins/ds-headbot-feishu/node_modules"
   ],

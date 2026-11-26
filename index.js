@@ -20,6 +20,25 @@ export const inject = ['connection', 'webServer', 'tools']
 const API_PATH = '/api/ds-headbot/v1'
 const PAGE_PATH = '/manage'
 
+// ADMIT-MIGRATE-0429: DSH removed connection.requestRejection when Connection migrated to the
+// admission model (upgrade-guide v0.2.2-rc.2 connection-page-peer: "Use `admit` instead of
+// `requestRejection`"). Calling the deleted member used to throw inside the API handler and the
+// webserver answered every admin-page call with an empty 400 (the 11-26 manager-page outage).
+// Three-layer form so one package serves both host generations: old hosts still expose
+// requestRejection; new hosts expose admit() — the rc.4 shell was exactly
+// `const admission = this.admit(request); return 'rejection' in admission ? admission.rejection : void 0`;
+// if neither member exists the webServer's own admission layer already gated this route before
+// the handler ran (that gate produced the 401/200 differential in the outage forensics), so
+// absence means pass rather than crash.
+export function connectionRejection(connection, req) {
+  if (typeof connection?.requestRejection === 'function') return connection.requestRejection(req)
+  if (typeof connection?.admit === 'function') {
+    const admission = connection.admit(req)
+    return admission && 'rejection' in admission ? admission.rejection : undefined
+  }
+  return undefined
+}
+
 export function apply(ctx, config = {}) {
   const publicHost = config.publicHost || process.env.HEADBOT_PUBLIC_HOST || 'localhost'
   const manager = new HeadbotManager(config, {
@@ -132,10 +151,10 @@ export function apply(ctx, config = {}) {
             return json(res, error.statusCode ?? 503, { error: error.message })
           }
         }
-        const rejection = ctx.connection.requestRejection(req)
+        const rejection = connectionRejection(ctx.connection, req)
         if (rejection !== undefined) {
           res.writeHead(rejection, { 'Cache-Control': 'no-store' })
-          res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+          res.end(rejection === 401 ? 'unauthorized' : rejection === 503 ? 'authentication unavailable' : 'forbidden')
           return
         }
         await handleApiRequest(req, res, manager, communications, runtimeConfig, ctx.logger, undefined, releaseUpdater, runtimeUpdater, litellmUpdater, sparkdashUpdater)

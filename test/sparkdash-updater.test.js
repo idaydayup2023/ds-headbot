@@ -4,6 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { SparkdashUpdater, performSparkdashUpgrade, parseLsRemoteHead, parseUpgradePlan, readLedgerReading } from '../lib/sparkdash-updater.js'
@@ -64,6 +65,9 @@ function makeGit(scenario) {
 function makeUpdater(scenario, overrides = {}) {
   const root = overrides.root
   const spawned = []
+  // UPGRADE-WINDOW-GATE-001: pre-existing cases click inside an adjudicated window (sha-welded to B);
+  // the blocked-outside domain lives in upgrade-window-gate-001.test.js.
+  writeFileSync(path.join(root, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务', targetVersion: B }))
   const updater = new SparkdashUpdater({
     manager: { root },
     logger: undefined,
@@ -238,11 +242,14 @@ test('double confirmation: 400 without ack or target, 409 when the target commit
   const updater = makeUpdater({ head: A, upstream: B, behind: '1' }, { root, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
   await assert.rejects(updater.startUpgrade({ targetCommit: B }), error => error.statusCode === 400 && /二次确认/.test(error.message))
   await assert.rejects(updater.startUpgrade({ acknowledgeOutage: true }), error => error.statusCode === 400 && /缺少目标 commit/.test(error.message))
+  // 窗门先于业务闸：请求要过窗就得配焊到该发 commit 的窗钥（窗钥缺失域归 upgrade-window-gate-001.test.js）。
+  writeFileSync(path.join(root, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务', targetVersion: A }))
   await assert.rejects(updater.startUpgrade(upgradeBody(A)), error => error.statusCode === 409 && /与上游 HEAD 不一致/.test(error.message))
   await assert.rejects(updater.startUpgrade(upgradeBody('not-a-sha')), error => error.statusCode === 409)
   // a target that matches HEAD itself is "already up to date", not a valid upgrade
   const sameRoot = await tempDir('confirm-same')
   const same = makeUpdater({ head: A, upstream: A }, { root: sameRoot, config: { localDir: '/fake/sparkdash-checkout', upgradePlan: PLAN } })
+  writeFileSync(path.join(sameRoot, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务', targetVersion: A }))
   await assert.rejects(same.startUpgrade(upgradeBody(A)), error => error.statusCode === 409 && /HEAD 一致/.test(error.message))
 })
 

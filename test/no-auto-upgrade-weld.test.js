@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -42,6 +43,10 @@ test('NO-AUTO-UPGRADE-001 weld ①: an inventory of every startUpgrade reference
 
 function stubUpdater(root, { tag = 'v0.9.9' } = {}) {
   const calls = []
+  // UPGRADE-WINDOW-GATE-001: weld cases exercise the worker chain inside an adjudicated window
+  // (this leg has no version weld — the target is whatever upstream publishes).
+  mkdirSync(path.join(root, 'headbot'), { recursive: true })
+  writeFileSync(path.join(root, 'headbot', 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务' }))
   const updater = new HeadbotReleaseUpdater({
     currentVersion: '0.2.5',
     manager: { root: path.join(root, 'headbot'), parentHome: path.join(root, 'dsh'), dshCommand: 'dsh', parentPort: 3080, controllerPath: 'dsh' },

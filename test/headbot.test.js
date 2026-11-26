@@ -178,6 +178,9 @@ test('release updater detects newer stable versions and launches a detached upda
 
   let requestedUrl, spawned, workerExit
   const manager = { root: path.join(root, 'headbot'), parentHome: path.join(root, 'dsh'), dshCommand: 'dsh', parentPort: 3080, controllerPath: 'dsh' }
+  // UPGRADE-WINDOW-GATE-001: this release-upgrade leg clicks inside an adjudicated window.
+  await mkdir(manager.root, { recursive: true })
+  await writeFile(path.join(manager.root, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务' }))
   const updater = new HeadbotReleaseUpdater({
     currentVersion: '0.2.5', manager, restartCommand: '/bin/launchctl', restartArgs: ['kickstart', '-k', 'gui/501/com.deepseek.dsh'],
     fetchImpl: async url => {

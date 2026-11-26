@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { LitellmGatewayUpdater, runPatchGate, compareCoreVersions, performLitellmUpgrade } from '../lib/litellm-updater.js'
@@ -15,6 +16,9 @@ async function tempDir(name) {
 
 function makeUpdater(overrides = {}) {
   const root = overrides.root
+  // UPGRADE-WINDOW-GATE-001: the pre-existing cases model inside-a-window clicks; the outside-the-window
+  // domain is owned by upgrade-window-gate-001.test.js. Welded key for this file's stable target.
+  writeFileSync(path.join(root, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务', targetVersion: '1.107.0-stable' }))
   return new LitellmGatewayUpdater({
     manager: { root, parentHome: path.join(root, 'parent') },
     logger: undefined,
@@ -148,8 +152,12 @@ test('startUpgrade requires the outage acknowledgement, the exact target, and a 
   const updater = makeUpdater({ root, fetchImpl: githubRelease(), patchManifest: path.join(root, 'missing.manifest.json') })
   // 平台无关：launchd 重启能力在 CI(linux) 上恒假，本案测的是双确认/目标对表/闸门三道闸，覆写之
   updater.canRestart = () => true
+  // 窗门是外层入口闸：本案测闸后语义，每发请求配一枚焊到该发目标的窗钥放行通过。
+  const keyFor = (target) => writeFileSync(path.join(root, 'upgrade-window.json'), JSON.stringify({ windowId: 'test-window', expiresAt: new Date(Date.now() + 3600_000).toISOString(), actor: '总务', targetVersion: target }))
   await assert.rejects(() => updater.startUpgrade({ targetVersion: '1.107.0-stable' }), /二次确认/)
+  keyFor('1.107.0')
   await assert.rejects(() => updater.startUpgrade({ acknowledgeOutage: true, targetVersion: '1.107.0' }), /目标版本/)
+  keyFor('1.107.0-stable')
   await assert.rejects(() => updater.startUpgrade({ acknowledgeOutage: true, targetVersion: '1.107.0-stable' }), /补丁闸门未通过/)
   const audit = await updater.recentAudit(10)
   assert.equal(audit[0].action, 'upgrade-blocked')

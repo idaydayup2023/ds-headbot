@@ -4,6 +4,10 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- DS Bot batch upgrades now allow up to 15 minutes for each instance to finish installing and restart (instead of timing out after two minutes), wait for the update transition before accepting a running status, and continue with the remaining instances when one instance fails. Any incomplete instances are listed in the management page error area.
+
 ## [0.4.29] - 2026-11-27
 
 ### Added

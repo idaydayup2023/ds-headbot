@@ -60,6 +60,9 @@ test('HTTP admission separates browser management from team access and plugin to
     // BURST-PACING-001 ⑥: 本案断言"发送即留 push 审计行"的次序形制，与压入节奏正交——config 显式关节奏。
     inboxPushPaceMs: 0 })
   t.after(() => dispose())
+  const apiRoute = routes.find(route => route.path === apiPath)
+  assert.equal(apiRoute.auth({ url: { pathname: apiPath + '/comms/v1/inbox' } }), 'anonymous')
+  assert.equal(apiRoute.auth({ url: { pathname: apiPath + '/teams' } }), 'required')
   const base = `http://127.0.0.1:${server.address().port}${apiPath}`
   const admin = { 'x-controller-session': 'test', 'Content-Type': 'application/json' }
   assert.equal((await fetch(base + '/teams')).status, 401)
@@ -146,6 +149,18 @@ test('manager page shows the version updater and places teams before team creati
   assert.match(html, /团队通信审计/)
   assert.match(html, /导出完整审计档案/)
   // Compile the browser program without executing DOM effects.
+  new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
+})
+
+test('manager page shows compact health icons with hover details in the Status column', () => {
+  const html = renderManagerPage()
+  assert.match(html, /health-icons/)
+  assert.match(html, /aria-label',title/)
+  assert.match(html, /实例正在运行/)
+  assert.match(html, /团队通信正常/)
+  assert.match(html, /飞书通信正常/)
+  assert.match(html, /cursor:default/)
+  assert.doesNotMatch(html, /Agent ·/)
   new Function(html.match(/<script>([\s\S]*?)<\/script>/)[1])
 })
 

@@ -121,6 +121,9 @@ export function apply(ctx, config = {}) {
     const apiRoute = ctx.webServer.register({
       kind: 'prefix',
       path: API_PATH,
+      // Team broker calls authenticate with Headbot team credentials inside the handler.
+      // Only those broker paths bypass DSH session auth; management APIs remain protected.
+      auth: request => request.url.pathname.startsWith(`${API_PATH}/comms/v1/`) ? 'anonymous' : 'required',
       handler: async (req, res) => {
         const pathname = new URL(req.url ?? '/', 'http://headbot.local').pathname
         if (pathname.startsWith(`${API_PATH}/comms/v1/`)) {
@@ -132,7 +135,7 @@ export function apply(ctx, config = {}) {
             return json(res, error.statusCode ?? 503, { error: error.message })
           }
         }
-        const rejection = ctx.connection.requestRejection(req)
+        const rejection = ctx.connection.requestRejection?.(req)
         if (rejection !== undefined) {
           res.writeHead(rejection, { 'Cache-Control': 'no-store' })
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')

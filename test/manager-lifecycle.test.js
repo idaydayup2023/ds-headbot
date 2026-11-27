@@ -68,6 +68,23 @@ test('startup retries temporary HTTP 404 responses until DSH routes are ready', 
   assert.equal((await manager.getTeam('warming')).status, 'running')
 })
 
+test('team status reports confirm broker uplink even when Feishu is disabled', async t => {
+  const { manager, generationLog } = await fixture(t)
+  await add(manager, 'alpha')
+  await manager.startTeam('alpha')
+  const runtime = manager.runtime.get('alpha')
+  assert.equal((await readFile(generationLog, 'utf8')).trim(), runtime.generation)
+  const actor = manager.identity(manager.findTeam('alpha'))
+  const report = await manager.reportTeamStatus(actor, {
+    generation: runtime.generation,
+    feishuStatus: 'unknown',
+    agentStatus: 'offline',
+  })
+  assert.deepEqual(report, { accepted: true })
+  assert.equal((await manager.getTeam('alpha')).broker.uplink.status, 'connected')
+  await manager.stopTeam('alpha')
+})
+
 // --- Runtime adoption (audit finding P1-1) ------------------------------------------------------------
 
 test('controller restart adopts the still-serving detached child from the persisted ledger without a second spawn', async t => {

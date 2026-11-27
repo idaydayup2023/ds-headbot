@@ -24,3 +24,17 @@ test('v1 state is backed up and identities persist; corrupted v2 state is not si
   await assert.rejects(broken.initialize(), /invalid communication identity/)
   assert.equal(JSON.parse(await readFile(manager.stateFile, 'utf8')).teams[0].communicationToken, undefined)
 })
+
+test('broker health presents team heartbeats and communication audit outcomes', async t => {
+  const { manager } = await fixture(t)
+  await manager.createTeam({ id: 'alpha', name: 'ALPHA', port: await port(), autoStart: false })
+  manager.runtime.set('alpha', { phase: 'running', brokerUplinkAt: Date.now() })
+  assert.equal((await manager.getTeam('alpha')).broker.uplink.status, 'connected')
+
+  manager.observeCommunicationEvent({ type: 'message.pushed', to: { id: 'alpha' }, timestamp: new Date().toISOString() })
+  assert.equal((await manager.getTeam('alpha')).broker.downlink.status, 'pushed')
+  manager.observeCommunicationEvent({ type: 'message.push-failed', to: { id: 'alpha' }, timestamp: new Date().toISOString() })
+  assert.equal((await manager.getTeam('alpha')).broker.downlink.status, 'failed')
+
+  assert.equal(manager.presentController().broker.uplink.status, 'local')
+})

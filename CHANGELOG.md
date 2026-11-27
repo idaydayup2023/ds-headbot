@@ -4,6 +4,17 @@ All notable changes to DS Headbot are recorded here.
 
 ## [Unreleased]
 
+## [0.4.29] - 2026-11-27
+
+### Added
+
+- **BROKER-HEALTH-001:** the manager exposes per-instance broker uplink heartbeats and downlink audit outcomes. The team table now uses compact instance, broker-envelope and Feishu-group icons in the Status column, with precise hover labels; Agent presence is omitted.
+
+### Fixed
+
+- Broker heartbeat generation is sent to every team instance, including teams without Feishu enabled, so their status reports can confirm the broker uplink.
+- DSH session authentication is bypassed only for `/comms/v1/` broker routes, which continue to enforce each team's bearer credential in Headbot. Management APIs remain protected. The request-rejection check also tolerates DSH runtimes without `requestRejection`.
+
 ## [0.4.28] - 2026-11-20
 
 The inbox learns to read with a server-side cursor, pushes leave in single file at a steady pace, and three blind spots are welded shut: attachments answer honestly about who may fetch them, the pre-install health gate keeps its own budget, and the upgrade path provably carries no auto-upgrade embryo. Also carries SPARKDASH-UPGRADE-002, merged after the v0.4.27 tag and recorded here for the first time.

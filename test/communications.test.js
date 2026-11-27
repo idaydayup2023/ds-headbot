@@ -21,6 +21,7 @@ test('delivered messages, binary attachments, safe retries and replay survive co
   const reloaded = new AuditedCommunications(manager.root, manager)
   const inbox = await reloaded.inbox(b)
   assert.equal(inbox.messages.length, 1)
+  assert.equal((await manager.getTeam('beta')).broker.downlink.status, 'received')
   assert.equal(inbox.messages[0].text, input.text)
   assert.deepEqual((await reloaded.inbox(b, inbox.nextCursor)).messages, [])
   const file = sent.message.attachments[0]

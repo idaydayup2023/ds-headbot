@@ -27,9 +27,11 @@ export async function fixture(t) {
   const fake = path.join(root, 'fake-dsh.mjs')
   const pluginLog = path.join(root, 'plugin-commands.log')
   const spawnLog = path.join(root, 'spawn-args.log')
+  const generationLog = path.join(root, 'runtime-generation.log')
   await writeFile(fake, `import http from 'node:http';import {readFileSync,realpathSync,existsSync,appendFileSync} from 'node:fs';
 const args=process.argv.slice(2);if(args[0]==='plugin'){appendFileSync(${JSON.stringify(pluginLog)},args.join(' ')+'\\n');process.exit(0)}
 appendFileSync(${JSON.stringify(spawnLog)},args.join('\\n')+'\\n---\\n');
+appendFileSync(${JSON.stringify(generationLog)},String(process.env.HEADBOT_RUNTIME_GENERATION||'')+'\\n');
 const value=key=>args[args.indexOf(key)+1];
 if(!readFileSync(value('--patch'),'utf8').includes('team-plugin.js'))process.exit(2);
 if(!process.env.HEADBOT_TEAM_TOKEN||process.cwd()!==realpathSync(process.env.HEADBOT_TEAM_FILES_ROOT))process.exit(3);
@@ -38,7 +40,7 @@ http.createServer((_req,res)=>{res.statusCode=Date.now()<readyAt?404:200;res.end
 console.log('dsh web: '+value('--public-url')+'?token=test-secret');`)
   const manager = new HeadbotManager({ dataDir: path.join(root, 'headbot'), dshHome: path.join(root, 'home'), dshCommand: fake, inheritModelSettings: false, ingressPort: await port() }, { parentPort: await port(), logger: quiet })
   t.after(() => manager.close())
-  return { root, manager, fake, pluginLog }
+  return { root, manager, fake, pluginLog, generationLog }
 }
 
 export async function add(manager, id) {

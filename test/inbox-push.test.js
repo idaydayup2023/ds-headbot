@@ -25,32 +25,43 @@ async function seedLeadSession(manager, id, sessionId) {
   await writeFile(path.join(home, 'bot', 'state.json'), JSON.stringify({ mainBotIds: [sessionId] }))
 }
 
-test('offline recipient is answered by rule: no journal delivery, no queue, no backfill', async t => {
+test('BROKER-DELIV-001: offline recipient is queued, not discarded — sealed event, kept attachment, auto-flush on return', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha')), b = manager.identity(manager.findTeam('beta'))
   const broker = new AuditedCommunications(manager.root, manager)
-  const bytes = Buffer.from('不得缓存')
-  const sent = await broker.send(a, { to: 'beta', subject: '催办', requestId: randomUUID(), text: '离线即拒', attachments: [{ name: 'a.txt', contentBase64: bytes.toString('base64') }] })
+  const bytes = Buffer.from('不得丢弃')
+  const sent = await broker.send(a, { to: 'beta', subject: '催办', requestId: randomUUID(), text: '离线即排队', attachments: [{ name: 'a.txt', contentBase64: bytes.toString('base64') }] })
   assert.equal(sent.delivered, false)
   assert.equal(sent.recipientOffline, true)
-  assert.match(sent.notice, /团队 beta\(BETA\) 当前不在线，消息未缓存/)
-  assert.equal(sent.message.type, 'message.offline-rejected')
+  assert.equal(sent.queued, true)
+  assert.match(sent.notice, /团队 beta\(BETA\) 当前不在线，请求已封入离线队列/)
+  assert.equal(sent.message.type, 'message.offline-queued')
   assert.equal(sent.message.fingerprint.length, 64)
+  assert.equal(broker.pendingByRecipient.get(b.instanceId)?.length, 1)
+  // Sealed is not delivered: while the recipient stays silent on both liveness sources the
+  // inbox shows nothing and the queue stays put.
   assert.deepEqual((await broker.inbox(b)).messages, [])
-  // Coming back online never turns the refusal into a delivery.
+  // Coming back online turns the sealed request into a delivery (the old rule discarded it).
   online(manager, 'beta')
+  // The first poll flushes (the sealed entry was not yet a message.sent at read time)...
   assert.deepEqual((await broker.inbox(b)).messages, [])
+  // ...the second finds the replayed delivery, same messageId as the sealed event.
+  const inbox = await broker.inbox(b)
+  assert.equal(inbox.messages.length, 1)
+  assert.equal(inbox.messages[0].text, '离线即排队')
+  assert.equal(inbox.messages[0].messageId, sent.message.messageId)
+  // The attachment survived queueing: objects are archived at seal time, not at flush time.
+  assert.deepEqual((await broker.attachment(b, sent.message.messageId, sent.message.attachments[0].id)).bytes, bytes)
   const audit = await broker.exportAudit()
-  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-rejected'])
+  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-queued', 'message.sent', 'messages.received', 'attachment.received'])
+  assert.equal(audit.events[1].replayedFrom, audit.events[0].seq)
   assert.equal(audit.events[0].subject, '催办')
   assert.equal(audit.events[0].from.id, 'alpha')
   assert.equal(audit.integrity, 'verified')
-  // No attachment object was archived for the refused request.
-  await assert.rejects(broker.attachment(b, sent.message.messageId ?? 'x', 'x'), /not found|404|invalid/)
 })
 
-test('duplicate requestId keeps its offline verdict without double-booking the journal', async t => {
+test('duplicate requestId keeps its offline-queued verdict without double-booking the journal', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha'))
@@ -59,12 +70,14 @@ test('duplicate requestId keeps its offline verdict without double-booking the j
   const first = await broker.send(a, input)
   const again = await broker.send(a, input)
   assert.equal(first.recipientOffline, true)
+  assert.equal(first.queued, true)
   assert.equal(again.recipientOffline, true)
+  assert.equal(again.queued, true)
   assert.equal(again.duplicate, true)
   assert.equal(again.message.seq, first.message.seq)
   await assert.rejects(broker.send(a, { ...input, text: '换内容' }), { statusCode: 409 })
   const audit = await broker.exportAudit()
-  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-rejected'])
+  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-queued'])
 })
 
 test('a delivered send never waits for the push and audits message.pushed with the wake-up text', async t => {
@@ -303,7 +316,7 @@ test('pushed, push-failed (HTTP 500 and timeout) and push-skipped all travel the
   })
 })
 
-test('a refused request keeps its refusal even after the recipient comes online', async t => {
+test('BROKER-DELIV-001: a queued request flips to delivery once the recipient is back — the flip the old refusal forbade', async t => {
   const { manager } = await fixture(t)
   await add(manager, 'alpha'); await add(manager, 'beta')
   const a = manager.identity(manager.findTeam('alpha'))
@@ -312,16 +325,17 @@ test('a refused request keeps its refusal even after the recipient comes online'
   const input = { to: 'beta', requestId: randomUUID(), text: '离线时发的单' }
   const first = await broker.send(a, input)
   assert.equal(first.recipientOffline, true)
-  // The team comes back; the verdict for the same requestId must not flip to a delivery.
+  assert.equal(first.queued, true)
+  // The team comes back; the same requestId now answers as delivered — the sealed request was
+  // never a refusal, so the flush is a delivery and the resend reports it as a duplicate.
   online(manager, 'beta')
+  await broker.inbox(b)
+  await broker.inbox(b)
   const again = await broker.send(a, input)
-  assert.equal(again.recipientOffline, true)
+  assert.equal(again.delivered, true)
   assert.equal(again.duplicate, true)
-  assert.equal(again.message.seq, first.message.seq)
-  assert.equal(again.message.type, 'message.offline-rejected')
-  assert.deepEqual((await broker.inbox(b)).messages, [])
   const audit = await broker.exportAudit()
-  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-rejected'])
+  assert.deepEqual(audit.events.map(event => event.type), ['message.offline-queued', 'message.sent', 'messages.received'])
 })
 
 // ENGINE-QUEUE-001 ⑦b 锁⑥：in-flight 上限 + FIFO。burst（案⑥ 实测 100% 集中单队）曾每枚消息
